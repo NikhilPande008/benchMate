@@ -1,0 +1,38 @@
+# Secrets and local tooling (never commit; the repo is public)
+.env
+.env.*
+!.env.example
+.claude/
+
+# Local data: SQLite, frames, field footage
+data/
+frames/
+*.sqlite
+*.sqlite3
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / web
+node_modules/
+apps/web/dist/
+
+# Your own voice recordings for the real intent set: kept local by default (voice is personal data).
+# Remove these two lines if you decide to publish them.
+eval/intent_set/real/*
+!eval/intent_set/real/README.md
+
+# Generated eval audio and run artefacts (regenerate with eval/latency_script/make_audio.py)
+eval/latency_script/audio/
+eval/latency_script/runs/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/

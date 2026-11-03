@@ -1,0 +1,26 @@
+[project]
+name = "benchmate"
+version = "0.1.0"
+description = "Hindi/English voice partner for mobile phone board repair"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "sqlmodel",
+    "uvicorn[standard]",
+    "httpx",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "playwright",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["engine/tests", "scripts/tests", "eval/latency_script"]
+addopts = "-q"
+pythonpath = ["."]

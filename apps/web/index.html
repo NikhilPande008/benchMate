@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Benchmate</title>
+    <link rel="icon" href="data:," />
+    <!-- The SDP offer goes to api.openai.com: open the TCP+TLS connection while the page loads. -->
+    <link rel="preconnect" href="https://api.openai.com" crossorigin />
+    <script>
+      // Connect early: ask for the client secret and the mic before the app bundle has loaded.
+      // src/realtime/voice.ts picks these up if the request matches what the app would send.
+      (function () {
+        var q = new URLSearchParams(location.search);
+        if (q.get('autoconnect') === '0') return;
+        var early = { t: performance.now() };
+        early.body = {
+          model: q.get('model') || 'mini',
+          run_id: q.get('run'),
+          turn_mode: q.get('turn_mode'),
+          prompt: q.get('prompt'),
+          output_cap: q.has('cap') ? q.get('cap') !== '0' : null,
+          use_pool: q.get('pool') !== '0',
+        };
+        early.secret = fetch('/realtime/client-secret', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(early.body),
+        }).then(function (r) {
+          early.secretAt = performance.now();
+          return r.ok ? r.json() : Promise.reject(new Error('client secret: ' + r.status));
+        });
+        early.secret.catch(function () {});
+        if (q.get('harness') !== '1' && navigator.mediaDevices) {
+          early.mic = navigator.mediaDevices
+            .getUserMedia({ audio: { echoCancellation: true, autoGainControl: false, noiseSuppression: false, channelCount: 1 } })
+            .then(function (m) {
+              early.micAt = performance.now();
+              return m;
+            });
+          early.mic.catch(function () {});
+        }
+        window.__benchmateEarly = early;
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

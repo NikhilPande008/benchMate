@@ -1,0 +1,26 @@
+{
+  "_note": "20 scripted turns for the Phase 1 latency run. voice: macOS `say` voice (Rishi = Indian English, also used for Roman-script Hinglish; Lekha = Hindi). kind: what the model should do (plain = answer, tool = call get_reading). gap_s: silence after the line, long enough for the reply to finish.",
+  "lead_in_s": 8,
+  "turns": [
+    {"id": "p01", "kind": "plain", "lang": "en", "voice": "Rishi", "gap_s": 10, "text": "Hi Benchmate, can you hear me?"},
+    {"id": "p02", "kind": "plain", "lang": "en", "voice": "Rishi", "gap_s": 11, "text": "What does diode mode measure?"},
+    {"id": "t01", "kind": "tool", "lang": "en", "voice": "Rishi", "gap_s": 13, "text": "Read the meter please."},
+    {"id": "p03", "kind": "plain", "lang": "hi", "voice": "Lekha", "gap_s": 11, "text": "बूट करंट क्या होता है?"},
+    {"id": "p04", "kind": "plain", "lang": "en", "voice": "Rishi", "gap_s": 11, "text": "What does O L mean on the multimeter?"},
+    {"id": "t02", "kind": "tool", "lang": "hinglish", "voice": "Rishi", "gap_s": 13, "text": "Supply kitna dikha raha hai?"},
+    {"id": "p05", "kind": "plain", "lang": "hinglish", "voice": "Rishi", "gap_s": 11, "text": "V BAT ka matlab kya hai?"},
+    {"id": "p06", "kind": "plain", "lang": "en", "voice": "Rishi", "gap_s": 10, "text": "What is the unit of current?"},
+    {"id": "t03", "kind": "tool", "lang": "en", "voice": "Rishi", "gap_s": 13, "text": "Can you read the supply display?"},
+    {"id": "p07", "kind": "plain", "lang": "hi", "voice": "Lekha", "gap_s": 11, "text": "मल्टीमीटर पर डायोड मोड कैसे लगाते हैं?"},
+    {"id": "p08", "kind": "plain", "lang": "en", "voice": "Rishi", "gap_s": 10, "text": "What is a short circuit, in one line?"},
+    {"id": "t04", "kind": "tool", "lang": "hi", "voice": "Lekha", "gap_s": 13, "text": "मीटर पढ़ो।"},
+    {"id": "p09", "kind": "plain", "lang": "hinglish", "voice": "Rishi", "gap_s": 9, "text": "Ruko, ek minute."},
+    {"id": "p10", "kind": "plain", "lang": "hi", "voice": "Lekha", "gap_s": 11, "text": "ग्राउंड पॉइंट क्या होता है?"},
+    {"id": "t05", "kind": "tool", "lang": "en", "voice": "Rishi", "gap_s": 13, "text": "I have placed the probes. Read the meter."},
+    {"id": "p11", "kind": "plain", "lang": "en", "voice": "Rishi", "gap_s": 11, "text": "Okay, I am back. What is the difference between volts and amps?"},
+    {"id": "t06", "kind": "tool", "lang": "hinglish", "voice": "Rishi", "gap_s": 13, "text": "Meter padho, probe laga diya hai."},
+    {"id": "p12", "kind": "plain", "lang": "en", "voice": "Rishi", "gap_s": 11, "text": "What does the beep in continuity mode mean?"},
+    {"id": "t07", "kind": "tool", "lang": "en", "voice": "Rishi", "gap_s": 13, "text": "What does the supply show now?"},
+    {"id": "p13", "kind": "plain", "lang": "hinglish", "voice": "Rishi", "gap_s": 10, "text": "Theek hai, thank you."}
+  ]
+}
