@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "pack_id": "general_dead_phone",
+  "general": true,
+  "name": {"en": "General dead-phone flow (no model data)", "hi": "General dead-phone flow (model data nahi)"},
+  "aliases": [],
+  "placeholder": true,
+  "sources": [
+    "PLACEHOLDER: common bench practice for dead and not-charging phones; thresholds and priors are invented for development.",
+    "Used when no model pack matches; the agent says it is working without model data."
+  ],
+  "symptoms": ["dead", "not_charging"],
+  "safe_power": {
+    "placeholder": true,
+    "voltage_min": 3.8,
+    "voltage_max": 4.2,
+    "voltage_target": 4.0,
+    "current_limit_max": 2.0,
+    "current_limit_target": 1.0
+  },
+  "boot": {
+    "thresholds": {
+      "placeholder": true,
+      "no_current_a": 0.01,
+      "short_connect_a": 0.3,
+      "at_limit_fraction": 0.95,
+      "at_limit_s": 3.0,
+      "drop_fraction": 0.3,
+      "watch_s": 4.0
+    },
+    "patterns": [
+      {"id": "NO_CURRENT", "meaning": {"en": "no current at all: open power path, power key line or a bad boot cable", "hi": "current bilkul nahi: power path open, power key line, ya boot cable kharab"}, "next_checks": ["cable_check", "vbat_conn", "pwr_key"]},
+      {"id": "SHORT_IMMEDIATE", "meaning": {"en": "high current at once without pressing power: short on the battery line", "hi": "power dabaye bina turant zyada current: battery line pe short"}, "next_checks": ["vbat_conn"]},
+      {"id": "RISE_THEN_DROP", "meaning": {"en": "current rises then drops back: the board starts and stops (processor, memory or software)", "hi": "current badhta hai phir gir jata hai: board start hoke ruk jata hai (processor, memory ya software)"}, "next_checks": ["pwr_key"]},
+      {"id": "NORMAL_BOOT", "meaning": {"en": "normal start-up current: not a power fault", "hi": "normal start-up current: power fault nahi"}, "next_checks": ["port_current", "vbus_port"]},
+      {"id": "AT_LIMIT", "meaning": {"en": "current sits at the supply limit: hard short, disconnect", "hi": "current limit pe atka hai: hard short, disconnect karo"}, "next_checks": ["vbat_conn"]}
+    ]
+  },
+  "ledger": {"placeholder": true, "other_prior": 0.05, "planning_confidence": 0.9},
+  "points": [
+    {
+      "id": "vbat_conn", "side": "top", "mode": "diode",
+      "label": {"en": "Battery connector, VBAT pin", "hi": "Battery connector ka VBAT pin"},
+      "probe_note": {"en": "Red probe on ground, black on the VBAT pin", "hi": "Red probe ground pe, black VBAT pin pe"},
+      "reference": {"placeholder": true, "value": 0.35, "tolerance": 0.1, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.25},
+        {"class": "normal", "lo": 0.25, "hi": 0.6}, {"class": "high", "lo": 0.6, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    },
+    {
+      "id": "pwr_key", "side": "top", "mode": "diode",
+      "label": {"en": "Power key line at the side button", "hi": "Side button pe power key line"},
+      "probe_note": {"en": "Red probe on ground, black on the power key pad", "hi": "Red probe ground pe, black power key pad pe"},
+      "reference": {"placeholder": true, "value": 0.45, "tolerance": 0.1, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.3},
+        {"class": "normal", "lo": 0.3, "hi": 0.7}, {"class": "high", "lo": 0.7, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    },
+    {
+      "id": "vbus_port", "side": "bottom", "mode": "diode",
+      "label": {"en": "Charging port, VBUS pin", "hi": "Charging port ka VBUS pin"},
+      "probe_note": {"en": "Red probe on ground, black on the VBUS pin", "hi": "Red probe ground pe, black VBUS pin pe"},
+      "reference": {"placeholder": true, "value": 0.4, "tolerance": 0.1, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.25},
+        {"class": "normal", "lo": 0.25, "hi": 0.7}, {"class": "high", "lo": 0.7, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    }
+  ],
+  "measurements": [
+    {"id": "cable_check", "kind": "observation", "healthy": "ok", "placeholder": true, "cost": 1,
+     "label": {"en": "boot cable and supply check", "hi": "boot cable aur supply check"},
+     "classes": ["faulty", "ok"],
+     "keywords": {
+       "faulty": ["faulty", "not ok", "not working", "broken", "loose", "kharab", "theek nahi", "nahi chal", "tuta", "dheela"],
+       "ok": ["ok", "okay", "fine", "working", "good", "theek", "sahi", "chal raha", "badhiya"]}},
+    {"id": "boot_pattern", "kind": "boot_pattern", "placeholder": true, "cost": 3, "requires_power": "connect_boot_cable",
+     "label": {"en": "boot current pattern", "hi": "boot current pattern"},
+     "classes": ["NO_CURRENT", "SHORT_IMMEDIATE", "RISE_THEN_DROP", "NORMAL_BOOT", "AT_LIMIT"]},
+    {"id": "vbat_conn", "kind": "point", "point_id": "vbat_conn", "placeholder": true, "cost": 1,
+     "label": {"en": "diode reading at the battery connector VBAT pin", "hi": "battery connector VBAT pin pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]},
+    {"id": "pwr_key", "kind": "point", "point_id": "pwr_key", "placeholder": true, "cost": 1,
+     "label": {"en": "diode reading on the power key line", "hi": "power key line pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]},
+    {"id": "port_current", "kind": "port_current", "placeholder": true, "cost": 3, "requires_power": "connect_port_supply",
+     "label": {"en": "current drawn through the charging port", "hi": "charging port se current"},
+     "classes": ["none", "low", "normal"],
+     "bands": [{"class": "none", "lo": 0.0, "hi": 0.02}, {"class": "low", "lo": 0.02, "hi": 0.3}, {"class": "normal", "lo": 0.3}]},
+    {"id": "vbus_port", "kind": "point", "point_id": "vbus_port", "placeholder": true, "cost": 1,
+     "label": {"en": "diode reading at the charging port VBUS pin", "hi": "charging port VBUS pin pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]}
+  ],
+  "faults": [
+    {"id": "g_vbat_short", "family": "general", "placeholder": true,
+     "name": {"en": "Short on the battery line", "hi": "Battery line pe short"},
+     "priors": {"dead": 0.30, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "SHORT_IMMEDIATE", "vbat_conn": "short", "pwr_key": "normal", "vbus_port": "normal"},
+     "fix": {"en": "Find the shorted part on the battery line (heat or rosin check).", "hi": "Battery line pe short part dhoondo (heat ya rosin check)."},
+     "explain": {"trainee": {"en": "Something on the battery line is shorted to ground.", "hi": "Battery line pe kuch ground se short hai."}, "expert": {"en": "VBAT short: immediate draw, near-zero diode reading.", "hi": "VBAT short: turant draw, diode lagbhag zero."}}},
+    {"id": "g_hard_short", "family": "general", "placeholder": true,
+     "name": {"en": "Hard short that holds the supply at its limit", "hi": "Hard short jo supply ko limit pe rakhta hai"},
+     "priors": {"dead": 0.08, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "AT_LIMIT", "vbat_conn": "short", "pwr_key": "normal", "vbus_port": "normal"},
+     "fix": {"en": "Disconnect, then locate the hard short with a heat check at low current.", "hi": "Disconnect karo, phir kam current pe heat check se hard short dhoondo."},
+     "explain": {"trainee": {"en": "The short is so strong the supply hits its limit.", "hi": "Short itna strong hai ki supply limit pe pahunch jaati hai."}, "expert": {"en": "Dead short: supply in current limit.", "hi": "Dead short: supply current limit mein."}}},
+    {"id": "g_open_power_path", "family": "general", "placeholder": true,
+     "name": {"en": "Open battery power path", "hi": "Battery power path open"},
+     "priors": {"dead": 0.25, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NO_CURRENT", "vbat_conn": "open", "pwr_key": "normal", "vbus_port": "normal"},
+     "fix": {"en": "Find the open part between the connector and the board (coil or fuse).", "hi": "Connector aur board ke beech open part dhoondo (coil ya fuse)."},
+     "explain": {"trainee": {"en": "Battery current cannot reach the board.", "hi": "Battery current board tak nahi pahunchta."}, "expert": {"en": "Open on VBAT: no draw, connector reads OL.", "hi": "VBAT open: draw nahi, connector OL."}}},
+    {"id": "g_bad_boot_cable", "family": "general", "placeholder": true,
+     "name": {"en": "Faulty boot cable or supply lead", "hi": "Boot cable ya supply lead kharab"},
+     "priors": {"dead": 0.08, "not_charging": 0.01},
+     "predicts": {"cable_check": "faulty", "boot_pattern": "NO_CURRENT", "vbat_conn": "normal", "pwr_key": "normal", "vbus_port": "normal"},
+     "fix": {"en": "Replace or re-seat the boot cable and check the supply leads.", "hi": "Boot cable badlo ya theek se lagao, supply leads check karo."},
+     "explain": {"trainee": {"en": "The cable may not reach the board at all.", "hi": "Cable shayad board tak pahunch hi nahi rahi."}, "expert": {"en": "Rule out the cable first.", "hi": "Pehle cable rule out karo."}}},
+    {"id": "g_power_key", "family": "general", "placeholder": true,
+     "name": {"en": "Fault on the power key line", "hi": "Power key line mein fault"},
+     "priors": {"dead": 0.12, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NO_CURRENT", "vbat_conn": "normal", "pwr_key": "open", "vbus_port": "normal"},
+     "fix": {"en": "Repair the power key line.", "hi": "Power key line theek karo."},
+     "explain": {"trainee": {"en": "The power key signal never reaches the power IC.", "hi": "Power key ka signal power IC tak nahi pahunchta."}, "expert": {"en": "Key line open, VBAT normal.", "hi": "Key line open, VBAT normal."}}},
+    {"id": "g_boot_failure", "family": "general", "placeholder": true,
+     "name": {"en": "Boot failure after power-up (processor, memory or software)", "hi": "Power-up ke baad boot fail (processor, memory ya software)"},
+     "priors": {"dead": 0.12, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "RISE_THEN_DROP", "vbat_conn": "normal", "pwr_key": "normal", "vbus_port": "normal"},
+     "fix": {"en": "Beyond the power path: needs a technician (processor, memory or software).", "hi": "Power path ke aage ka fault: technician chahiye (processor, memory ya software)."},
+     "explain": {"trainee": {"en": "The board starts, then stops before it finishes booting.", "hi": "Board start hota hai, phir boot poora hone se pehle ruk jata hai."}, "expert": {"en": "Rise-then-drop: power path fine, boot stage fails.", "hi": "Rise-then-drop: power path theek, boot stage fail."}}},
+    {"id": "g_port", "family": "general", "placeholder": true,
+     "name": {"en": "Damaged charging port", "hi": "Charging port kharab"},
+     "priors": {"dead": 0.01, "not_charging": 0.40},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NORMAL_BOOT", "vbat_conn": "normal", "pwr_key": "normal", "port_current": "none", "vbus_port": "open"},
+     "fix": {"en": "Replace the charging port.", "hi": "Charging port badlo."},
+     "explain": {"trainee": {"en": "No current gets in through the port.", "hi": "Port se current andar nahi aata."}, "expert": {"en": "VBUS open at the port.", "hi": "Port pe VBUS open."}}},
+    {"id": "g_charge_path", "family": "general", "placeholder": true,
+     "name": {"en": "Failed part in the charging path", "hi": "Charging path ka part kharab"},
+     "priors": {"dead": 0.01, "not_charging": 0.35},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NORMAL_BOOT", "vbat_conn": "normal", "pwr_key": "normal", "port_current": "none", "vbus_port": "normal"},
+     "fix": {"en": "Check the charging-path parts after the port.", "hi": "Port ke baad charging path ke parts check karo."},
+     "explain": {"trainee": {"en": "The port is fine but charging current stops after it.", "hi": "Port theek hai par charging current uske baad ruk jata hai."}, "expert": {"en": "VBUS normal, no charge current.", "hi": "VBUS normal, charge current nahi."}}},
+    {"id": "g_external", "family": "general", "placeholder": true,
+     "name": {"en": "Board fine: cable or charger at fault", "hi": "Board theek: cable ya charger kharab"},
+     "priors": {"dead": 0.01, "not_charging": 0.25},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NORMAL_BOOT", "vbat_conn": "normal", "pwr_key": "normal", "port_current": "normal", "vbus_port": "normal"},
+     "fix": {"en": "Try a known-good cable and charger.", "hi": "Achha cable aur charger try karo."},
+     "explain": {"trainee": {"en": "The board charges normally from a good supply.", "hi": "Achhi supply se board normal charge hota hai."}, "expert": {"en": "External fault.", "hi": "Bahar ka fault."}}}
+  ],
+  "glossary": {
+    "diode_mode": {"en": "Diode mode shows the voltage drop across a junction, in volts.", "hi": "Diode mode junction ka voltage drop dikhata hai, volt mein."},
+    "boot_current": {"en": "Boot current is the current the board draws when it is powered and switched on.", "hi": "Boot current woh current hai jo board power aur switch on hone pe leta hai."},
+    "vbat": {"en": "VBAT is the main supply line from the battery connector into the board.", "hi": "VBAT battery connector se board mein jaane wali main supply line hai."},
+    "current_limit": {"en": "The current limit caps how much current the supply will give, which protects the board.", "hi": "Current limit supply ka maximum current hai, jo board ko bachata hai."},
+    "short": {"en": "A short is a near-zero resistance path to ground.", "hi": "Short matlab ground tak lagbhag zero resistance ka raasta."},
+    "ol": {"en": "OL means open: no connection between the probes.", "hi": "OL matlab open: probes ke beech connection nahi."}
+  }
+}

@@ -73,6 +73,64 @@ class TranscriptIn(BaseModel):
     languages: list[str] | None = PField(default=None, max_length=8)
 
 
+class EvidenceRow(SQLModel, table=True):
+    __tablename__ = "evidence"
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(index=True)
+    run_id: str | None = Field(default=None, index=True)
+    seq: int = 0  # arrival order within the repair session
+    # how the ledger used it: "ledger" | "remeasure" | "fix_check" | "after_fix" | None (log only)
+    ledger_use: str | None = None
+    kind: str
+    measurement_id: str | None = None
+    outcome: str | None = None
+    confidence: float
+    source: str
+    simulated: bool = False
+    data: str  # the full EvidenceRecord as JSON
+    t_ms: float
+
+
+class LedgerSnapshotRow(SQLModel, table=True):
+    __tablename__ = "ledger_snapshots"
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    run_id: str | None = Field(default=None, index=True)
+    index: int
+    evidence_id: str
+    after: str  # JSON {fault: p}
+    deltas: str  # JSON {fault: change}
+    stop: bool
+    conflict: str | None = None
+    t_ms: float
+
+
+class RepairStateRow(SQLModel, table=True):
+    """The repair session's state, overwritten as it changes; with the evidence it rebuilds the
+    session after a restart. Power approvals and pending read-backs are never stored."""
+
+    __tablename__ = "repair_state"
+
+    session_id: str = Field(primary_key=True)
+    run_id: str | None = Field(default=None, index=True)
+    data: str  # JSON, RepairSession.state_dict()
+    t_ms: float
+
+
+class RepairRecordRow(SQLModel, table=True):
+    __tablename__ = "repair_records"
+
+    id: str = Field(primary_key=True)
+    session_id: str = Field(index=True)
+    run_id: str | None = Field(default=None, index=True)
+    outcome: str
+    fault_id: str | None = None
+    data: str
+    t_ms: float
+
+
 class SpanIn(BaseModel):
     """A span as sent by the browser (or created by the engine)."""
 
@@ -148,6 +206,34 @@ class TelemetryStore:
     def record_session(self, row: RealtimeSessionRow) -> None:
         self._queue.put_nowait(row)
 
+    def record_repair(self, table: str, row: dict[str, Any], run_id: str | None = None) -> None:
+        """Evidence, ledger snapshots and repair records from a RepairSession."""
+        t = now_ms()
+        if table == "evidence":
+            row = dict(row)
+            seq, use = row.pop("seq", 0), row.pop("ledger_use", None)
+            model: SQLModel = EvidenceRow(
+                id=row["id"], session_id=row["session_id"], run_id=run_id, seq=seq, ledger_use=use, kind=row["kind"],
+                measurement_id=row.get("measurement_id"), outcome=row.get("outcome"), confidence=row["confidence"],
+                source=row["source"], simulated=row.get("simulated", False), data=json.dumps(row), t_ms=t,
+            )
+        elif table == "repair_state":
+            model = RepairStateRow(session_id=row["session_id"], run_id=run_id, data=json.dumps(row), t_ms=t)
+        elif table == "ledger_snapshots":
+            model = LedgerSnapshotRow(
+                session_id=row["session_id"], run_id=run_id, index=row["index"], evidence_id=row["evidence_id"],
+                after=json.dumps(row["after"]), deltas=json.dumps(row["deltas"]), stop=row["stop"],
+                conflict=row.get("conflict"), t_ms=t,
+            )
+        elif table == "repair_records":
+            model = RepairRecordRow(
+                id=row["id"], session_id=row["session_id"], run_id=run_id, outcome=row["outcome"],
+                fault_id=row.get("fault_id"), data=json.dumps(row), t_ms=t,
+            )
+        else:
+            raise ValueError(table)
+        self._queue.put_nowait(model)
+
     def record_transcript(self, session_id: str, msg: TranscriptIn, run_id: str | None = None) -> None:
         self._queue.put_nowait(
             Transcript(
@@ -181,7 +267,7 @@ class TelemetryStore:
     def _write(self, rows: Iterable[SQLModel]) -> None:
         with Session(self.engine) as s:
             for row in rows:
-                s.merge(row) if isinstance(row, RealtimeSessionRow) else s.add(row)
+                s.merge(row) if isinstance(row, (RealtimeSessionRow, EvidenceRow, RepairRecordRow, RepairStateRow)) else s.add(row)
             s.commit()
 
 
@@ -211,3 +297,21 @@ def load_transcripts(engine: Engine, run_id: str | None = None, session_ids: lis
         if session_ids:
             q = q.where(Transcript.session_id.in_(session_ids))  # type: ignore[union-attr]
         return list(s.exec(q.order_by(Transcript.t_ms)))
+
+
+def load_evidence(engine: Engine, session_id: str) -> list[EvidenceRow]:
+    with Session(engine) as s:
+        q = select(EvidenceRow).where(EvidenceRow.session_id == session_id)
+        return list(s.exec(q.order_by(EvidenceRow.seq)))  # type: ignore[arg-type]
+
+
+def load_snapshots(engine: Engine, session_id: str) -> list[LedgerSnapshotRow]:
+    with Session(engine) as s:
+        q = select(LedgerSnapshotRow).where(LedgerSnapshotRow.session_id == session_id)
+        return list(s.exec(q.order_by(LedgerSnapshotRow.index)))  # type: ignore[arg-type]
+
+
+def load_repair_state(engine: Engine, session_id: str) -> dict[str, Any] | None:
+    with Session(engine) as s:
+        row = s.get(RepairStateRow, session_id)
+        return json.loads(row.data) if row else None

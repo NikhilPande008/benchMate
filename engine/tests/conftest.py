@@ -38,6 +38,7 @@ def settings(tmp_path: Path) -> Settings:
         db_path=tmp_path / "test.sqlite",
         web_dist=tmp_path / "no-dist",
         dummy_delay_s=0.0,
+        fake_time_scale=0.0,
     )
 
 
@@ -51,3 +52,8 @@ def client(settings: Settings, fake_openai: FakeOpenAI):
     http = httpx.AsyncClient(transport=httpx.MockTransport(fake_openai.handler))
     with TestClient(create_app(settings, http_client=http, prewarm=False)) as c:
         yield c
+
+
+def flush_telemetry(client: TestClient) -> None:
+    """Wait until queued telemetry rows are written (the writer runs on the app's event loop)."""
+    client.portal.call(client.app.state.telemetry.flush)

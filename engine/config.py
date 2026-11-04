@@ -48,7 +48,11 @@ class Settings(BaseModel):
     # plus transcript text tokens (0.3-0.8x the audio tokens); output_tokens = audio + text.
     # None = no cap ("inf").
     max_output_tokens: int | None = 220
-    dummy_delay_s: float = 1.5
+    dummy_delay_s: float = 1.5  # fake bench meter read time (kept from Phase 1 for comparable latency runs)
+    vision_timeout_s: float = 4.0  # decided setting: hard timeout for a camera read
+    fake_scenario: str = "short_battery_line"
+    fake_time_scale: float = 1.0  # fake bench delays (supply read, meter read, boot watch); tests use 0
+    dev_endpoints: bool = True  # GET /dev/sessions/{id} (bound to 127.0.0.1 with the rest of the engine)
     tool_timeout_s: float = 6.0
     host: str = "127.0.0.1"
     port: int = 8000
@@ -76,6 +80,10 @@ class Settings(BaseModel):
             prompt=env.get("BENCHMATE_PROMPT", defaults.prompt),
             max_output_tokens=_cap(env.get("BENCHMATE_MAX_OUTPUT_TOKENS"), defaults.max_output_tokens),
             dummy_delay_s=float(env.get("BENCHMATE_DUMMY_DELAY_S", defaults.dummy_delay_s)),
+            vision_timeout_s=float(env.get("BENCHMATE_VISION_TIMEOUT_S", defaults.vision_timeout_s)),
+            fake_scenario=env.get("BENCHMATE_FAKE_SCENARIO", defaults.fake_scenario),
+            fake_time_scale=float(env.get("BENCHMATE_FAKE_TIME_SCALE", defaults.fake_time_scale)),
+            dev_endpoints=env.get("BENCHMATE_DEV_ENDPOINTS", "1") != "0",
             host=env.get("BENCHMATE_HOST", defaults.host),
             port=int(env.get("BENCHMATE_PORT", defaults.port)),
             db_path=db if db.is_absolute() else REPO_ROOT / db,

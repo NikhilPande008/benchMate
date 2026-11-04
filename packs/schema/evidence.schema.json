@@ -1,0 +1,360 @@
+{
+ "$defs": {
+  "BootFeatures": {
+   "properties": {
+    "at_limit_s": {
+     "title": "At Limit S",
+     "type": "number"
+    },
+    "i_connect": {
+     "title": "I Connect",
+     "type": "number"
+    },
+    "i_peak": {
+     "title": "I Peak",
+     "type": "number"
+    },
+    "i_steady": {
+     "title": "I Steady",
+     "type": "number"
+    },
+    "t_drop": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "T Drop"
+    }
+   },
+   "required": [
+    "i_connect",
+    "i_peak",
+    "i_steady",
+    "t_drop",
+    "at_limit_s"
+   ],
+   "title": "BootFeatures",
+   "type": "object"
+  },
+  "BootSample": {
+   "properties": {
+    "current_a": {
+     "title": "Current A",
+     "type": "number"
+    },
+    "t_s": {
+     "title": "T S",
+     "type": "number"
+    }
+   },
+   "required": [
+    "t_s",
+    "current_a"
+   ],
+   "title": "BootSample",
+   "type": "object"
+  },
+  "BootTrace": {
+   "properties": {
+    "features": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/BootFeatures"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "limit_a": {
+     "title": "Limit A",
+     "type": "number"
+    },
+    "pattern": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Pattern"
+    },
+    "samples": {
+     "items": {
+      "$ref": "#/$defs/BootSample"
+     },
+     "title": "Samples",
+     "type": "array"
+    },
+    "trigger": {
+     "enum": [
+      "on_connect",
+      "on_power_press"
+     ],
+     "title": "Trigger",
+     "type": "string"
+    }
+   },
+   "required": [
+    "trigger",
+    "limit_a",
+    "samples"
+   ],
+   "title": "BootTrace",
+   "type": "object"
+  },
+  "FieldValue": {
+   "additionalProperties": false,
+   "description": "One number on a multi-field display (the bench supply shows three).",
+   "properties": {
+    "confidence": {
+     "maximum": 1,
+     "minimum": 0,
+     "title": "Confidence",
+     "type": "number"
+    },
+    "unit": {
+     "title": "Unit",
+     "type": "string"
+    },
+    "value": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Value"
+    }
+   },
+   "required": [
+    "value",
+    "unit",
+    "confidence"
+   ],
+   "title": "FieldValue",
+   "type": "object"
+  }
+ },
+ "$id": "https://benchmate.local/schema/evidence.json",
+ "additionalProperties": false,
+ "properties": {
+  "confidence": {
+   "maximum": 1,
+   "minimum": 0,
+   "title": "Confidence",
+   "type": "number"
+  },
+  "confirmed": {
+   "default": false,
+   "title": "Confirmed",
+   "type": "boolean"
+  },
+  "created_at": {
+   "format": "date-time",
+   "title": "Created At",
+   "type": "string"
+  },
+  "fields": {
+   "anyOf": [
+    {
+     "additionalProperties": {
+      "$ref": "#/$defs/FieldValue"
+     },
+     "type": "object"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Fields"
+  },
+  "frame_paths": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Frame Paths",
+   "type": "array"
+  },
+  "id": {
+   "title": "Id",
+   "type": "string"
+  },
+  "kind": {
+   "enum": [
+    "supply",
+    "meter",
+    "boot_trace",
+    "probe_check",
+    "spoken",
+    "observation"
+   ],
+   "title": "Kind",
+   "type": "string"
+  },
+  "legible": {
+   "default": true,
+   "title": "Legible",
+   "type": "boolean"
+  },
+  "measurement_id": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Measurement Id"
+  },
+  "mode": {
+   "anyOf": [
+    {
+     "enum": [
+      "diode",
+      "dcv",
+      "ohm",
+      "current"
+     ],
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Mode"
+  },
+  "needs_confirmation": {
+   "default": false,
+   "title": "Needs Confirmation",
+   "type": "boolean"
+  },
+  "open": {
+   "default": false,
+   "title": "Open",
+   "type": "boolean"
+  },
+  "outcome": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Outcome"
+  },
+  "point_id": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Point Id"
+  },
+  "resolution": {
+   "anyOf": [
+    {
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Resolution"
+  },
+  "session_id": {
+   "title": "Session Id",
+   "type": "string"
+  },
+  "simulated": {
+   "default": false,
+   "title": "Simulated",
+   "type": "boolean"
+  },
+  "source": {
+   "enum": [
+    "camera",
+    "spoken"
+   ],
+   "title": "Source",
+   "type": "string"
+  },
+  "superseded_by": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Superseded By"
+  },
+  "trace": {
+   "anyOf": [
+    {
+     "$ref": "#/$defs/BootTrace"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null
+  },
+  "unit": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Unit"
+  },
+  "value": {
+   "anyOf": [
+    {
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Value"
+  }
+ },
+ "required": [
+  "session_id",
+  "kind",
+  "source",
+  "confidence"
+ ],
+ "title": "EvidenceRecord",
+ "type": "object"
+}

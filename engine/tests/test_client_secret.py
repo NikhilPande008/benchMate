@@ -7,9 +7,10 @@ import httpx
 from fastapi.testclient import TestClient
 
 from engine.main import create_app
+from engine.tools import ALLOWED_TOOL_NAMES
 from engine.telemetry import load_sessions, make_engine
 
-from .conftest import FAKE_KEY, FakeOpenAI
+from .conftest import FAKE_KEY, FakeOpenAI, flush_telemetry
 
 
 def test_mints_secret_with_decided_session_settings(client, fake_openai, settings):
@@ -41,7 +42,7 @@ def test_mints_secret_with_decided_session_settings(client, fake_openai, setting
         "retention_ratio": 0.8,
         "token_limits": {"post_instructions": 8000},
     }
-    assert [t["name"] for t in session["tools"]] == ["get_reading"]
+    assert [t["name"] for t in session["tools"]] == list(ALLOWED_TOOL_NAMES)
 
 
 def test_api_key_never_returned_to_browser(client):
@@ -77,7 +78,7 @@ def test_openai_error_becomes_502_without_leaking_key(settings):
 
 def test_session_is_recorded_for_telemetry(client, settings):
     sid = client.post("/realtime/client-secret", json={"model": "flagship", "run_id": "run-x"}).json()["session_id"]
-    client.close()  # lifespan shutdown flushes the telemetry queue
+    flush_telemetry(client)
     rows = load_sessions(make_engine(settings.db_path), "run-x")
     assert [(r.id, r.model) for r in rows] == [(sid, settings.realtime_model)]
 

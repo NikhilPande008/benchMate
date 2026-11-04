@@ -1,0 +1,640 @@
+{
+ "$defs": {
+  "Band": {
+   "additionalProperties": false,
+   "description": "Reading class for value in [lo, hi). `ol` matches an OL (open) display.",
+   "properties": {
+    "class": {
+     "title": "Class",
+     "type": "string"
+    },
+    "hi": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Hi"
+    },
+    "lo": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lo"
+    },
+    "ol": {
+     "default": false,
+     "title": "Ol",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "class"
+   ],
+   "title": "Band",
+   "type": "object"
+  },
+  "Boot": {
+   "additionalProperties": false,
+   "properties": {
+    "patterns": {
+     "items": {
+      "$ref": "#/$defs/BootPattern"
+     },
+     "title": "Patterns",
+     "type": "array"
+    },
+    "thresholds": {
+     "$ref": "#/$defs/BootThresholds"
+    }
+   },
+   "required": [
+    "thresholds",
+    "patterns"
+   ],
+   "title": "Boot",
+   "type": "object"
+  },
+  "BootPattern": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "enum": [
+      "NO_CURRENT",
+      "SHORT_IMMEDIATE",
+      "RISE_THEN_DROP",
+      "NORMAL_BOOT",
+      "AT_LIMIT"
+     ],
+     "title": "Id",
+     "type": "string"
+    },
+    "meaning": {
+     "$ref": "#/$defs/Localized"
+    },
+    "next_checks": {
+     "items": {
+      "type": "string"
+     },
+     "title": "Next Checks",
+     "type": "array"
+    }
+   },
+   "required": [
+    "id",
+    "meaning",
+    "next_checks"
+   ],
+   "title": "BootPattern",
+   "type": "object"
+  },
+  "BootThresholds": {
+   "additionalProperties": false,
+   "properties": {
+    "at_limit_fraction": {
+     "title": "At Limit Fraction",
+     "type": "number"
+    },
+    "at_limit_s": {
+     "title": "At Limit S",
+     "type": "number"
+    },
+    "drop_fraction": {
+     "title": "Drop Fraction",
+     "type": "number"
+    },
+    "no_current_a": {
+     "title": "No Current A",
+     "type": "number"
+    },
+    "placeholder": {
+     "description": "true = invented for development; replace with reference measurements",
+     "title": "Placeholder",
+     "type": "boolean"
+    },
+    "short_connect_a": {
+     "title": "Short Connect A",
+     "type": "number"
+    },
+    "watch_s": {
+     "title": "Watch S",
+     "type": "number"
+    }
+   },
+   "required": [
+    "placeholder",
+    "no_current_a",
+    "short_connect_a",
+    "at_limit_fraction",
+    "at_limit_s",
+    "drop_fraction",
+    "watch_s"
+   ],
+   "title": "BootThresholds",
+   "type": "object"
+  },
+  "Fault": {
+   "additionalProperties": false,
+   "description": "`placeholder` covers `priors`.",
+   "properties": {
+    "explain": {
+     "additionalProperties": {
+      "$ref": "#/$defs/Localized"
+     },
+     "propertyNames": {
+      "enum": [
+       "trainee",
+       "expert"
+      ]
+     },
+     "title": "Explain",
+     "type": "object"
+    },
+    "family": {
+     "enum": [
+      "short_battery_line",
+      "no_current",
+      "not_charging",
+      "general"
+     ],
+     "title": "Family",
+     "type": "string"
+    },
+    "fix": {
+     "$ref": "#/$defs/Localized"
+    },
+    "id": {
+     "title": "Id",
+     "type": "string"
+    },
+    "name": {
+     "$ref": "#/$defs/Localized"
+    },
+    "placeholder": {
+     "description": "true = invented for development; replace with reference measurements",
+     "title": "Placeholder",
+     "type": "boolean"
+    },
+    "predicts": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "title": "Predicts",
+     "type": "object"
+    },
+    "priors": {
+     "additionalProperties": {
+      "type": "number"
+     },
+     "title": "Priors",
+     "type": "object"
+    }
+   },
+   "required": [
+    "placeholder",
+    "id",
+    "family",
+    "name",
+    "priors",
+    "predicts",
+    "fix",
+    "explain"
+   ],
+   "title": "Fault",
+   "type": "object"
+  },
+  "LedgerParams": {
+   "additionalProperties": false,
+   "properties": {
+    "other_prior": {
+     "exclusiveMaximum": 0.5,
+     "exclusiveMinimum": 0,
+     "title": "Other Prior",
+     "type": "number"
+    },
+    "placeholder": {
+     "description": "true = invented for development; replace with reference measurements",
+     "title": "Placeholder",
+     "type": "boolean"
+    },
+    "planning_confidence": {
+     "exclusiveMinimum": 0,
+     "maximum": 1,
+     "title": "Planning Confidence",
+     "type": "number"
+    }
+   },
+   "required": [
+    "placeholder",
+    "other_prior",
+    "planning_confidence"
+   ],
+   "title": "LedgerParams",
+   "type": "object"
+  },
+  "Localized": {
+   "additionalProperties": false,
+   "properties": {
+    "en": {
+     "title": "En",
+     "type": "string"
+    },
+    "hi": {
+     "title": "Hi",
+     "type": "string"
+    }
+   },
+   "required": [
+    "en",
+    "hi"
+   ],
+   "title": "Localized",
+   "type": "object"
+  },
+  "Measurement": {
+   "additionalProperties": false,
+   "description": "Something the ledger can learn from. `placeholder` covers `cost`.",
+   "properties": {
+    "bands": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/Band"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Bands"
+    },
+    "classes": {
+     "items": {
+      "type": "string"
+     },
+     "minItems": 2,
+     "title": "Classes",
+     "type": "array"
+    },
+    "cost": {
+     "exclusiveMinimum": 0,
+     "title": "Cost",
+     "type": "number"
+    },
+    "healthy": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Healthy"
+    },
+    "id": {
+     "title": "Id",
+     "type": "string"
+    },
+    "keywords": {
+     "anyOf": [
+      {
+       "additionalProperties": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Keywords"
+    },
+    "kind": {
+     "enum": [
+      "boot_pattern",
+      "point",
+      "observation",
+      "port_current"
+     ],
+     "title": "Kind",
+     "type": "string"
+    },
+    "label": {
+     "$ref": "#/$defs/Localized"
+    },
+    "placeholder": {
+     "description": "true = invented for development; replace with reference measurements",
+     "title": "Placeholder",
+     "type": "boolean"
+    },
+    "point_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Point Id"
+    },
+    "requires_power": {
+     "anyOf": [
+      {
+       "enum": [
+        "connect_boot_cable",
+        "press_power_key",
+        "connect_port_supply"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Requires Power"
+    }
+   },
+   "required": [
+    "placeholder",
+    "id",
+    "kind",
+    "label",
+    "classes",
+    "cost"
+   ],
+   "title": "Measurement",
+   "type": "object"
+  },
+  "Point": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "title": "Id",
+     "type": "string"
+    },
+    "label": {
+     "$ref": "#/$defs/Localized"
+    },
+    "mode": {
+     "enum": [
+      "diode",
+      "dcv",
+      "ohm"
+     ],
+     "title": "Mode",
+     "type": "string"
+    },
+    "probe_note": {
+     "$ref": "#/$defs/Localized"
+    },
+    "reference": {
+     "$ref": "#/$defs/Reference"
+    },
+    "side": {
+     "enum": [
+      "top",
+      "bottom"
+     ],
+     "title": "Side",
+     "type": "string"
+    },
+    "xy": {
+     "anyOf": [
+      {
+       "maxItems": 2,
+       "minItems": 2,
+       "prefixItems": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "integer"
+        }
+       ],
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Xy"
+    }
+   },
+   "required": [
+    "id",
+    "label",
+    "side",
+    "mode",
+    "probe_note",
+    "reference"
+   ],
+   "title": "Point",
+   "type": "object"
+  },
+  "Reference": {
+   "additionalProperties": false,
+   "properties": {
+    "bands": {
+     "items": {
+      "$ref": "#/$defs/Band"
+     },
+     "title": "Bands",
+     "type": "array"
+    },
+    "placeholder": {
+     "description": "true = invented for development; replace with reference measurements",
+     "title": "Placeholder",
+     "type": "boolean"
+    },
+    "tolerance": {
+     "title": "Tolerance",
+     "type": "number"
+    },
+    "unit": {
+     "enum": [
+      "diode_V",
+      "V",
+      "ohm",
+      "A"
+     ],
+     "title": "Unit",
+     "type": "string"
+    },
+    "value": {
+     "title": "Value",
+     "type": "number"
+    }
+   },
+   "required": [
+    "placeholder",
+    "value",
+    "tolerance",
+    "unit",
+    "bands"
+   ],
+   "title": "Reference",
+   "type": "object"
+  },
+  "SafePower": {
+   "additionalProperties": false,
+   "properties": {
+    "current_limit_max": {
+     "title": "Current Limit Max",
+     "type": "number"
+    },
+    "current_limit_target": {
+     "title": "Current Limit Target",
+     "type": "number"
+    },
+    "placeholder": {
+     "description": "true = invented for development; replace with reference measurements",
+     "title": "Placeholder",
+     "type": "boolean"
+    },
+    "voltage_max": {
+     "title": "Voltage Max",
+     "type": "number"
+    },
+    "voltage_min": {
+     "title": "Voltage Min",
+     "type": "number"
+    },
+    "voltage_target": {
+     "title": "Voltage Target",
+     "type": "number"
+    }
+   },
+   "required": [
+    "placeholder",
+    "voltage_min",
+    "voltage_max",
+    "voltage_target",
+    "current_limit_max",
+    "current_limit_target"
+   ],
+   "title": "SafePower",
+   "type": "object"
+  }
+ },
+ "$id": "https://benchmate.local/schema/pack.v1.json",
+ "additionalProperties": false,
+ "properties": {
+  "aliases": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Aliases",
+   "type": "array"
+  },
+  "boot": {
+   "$ref": "#/$defs/Boot"
+  },
+  "faults": {
+   "items": {
+    "$ref": "#/$defs/Fault"
+   },
+   "title": "Faults",
+   "type": "array"
+  },
+  "general": {
+   "title": "General",
+   "type": "boolean"
+  },
+  "glossary": {
+   "additionalProperties": {
+    "$ref": "#/$defs/Localized"
+   },
+   "title": "Glossary",
+   "type": "object"
+  },
+  "ledger": {
+   "$ref": "#/$defs/LedgerParams"
+  },
+  "measurements": {
+   "items": {
+    "$ref": "#/$defs/Measurement"
+   },
+   "title": "Measurements",
+   "type": "array"
+  },
+  "name": {
+   "$ref": "#/$defs/Localized"
+  },
+  "pack_id": {
+   "title": "Pack Id",
+   "type": "string"
+  },
+  "placeholder": {
+   "title": "Placeholder",
+   "type": "boolean"
+  },
+  "points": {
+   "items": {
+    "$ref": "#/$defs/Point"
+   },
+   "title": "Points",
+   "type": "array"
+  },
+  "safe_power": {
+   "$ref": "#/$defs/SafePower"
+  },
+  "schema_version": {
+   "const": 1,
+   "title": "Schema Version",
+   "type": "integer"
+  },
+  "sources": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Sources",
+   "type": "array"
+  },
+  "symptoms": {
+   "items": {
+    "type": "string"
+   },
+   "title": "Symptoms",
+   "type": "array"
+  }
+ },
+ "required": [
+  "schema_version",
+  "pack_id",
+  "general",
+  "name",
+  "placeholder",
+  "sources",
+  "symptoms",
+  "safe_power",
+  "boot",
+  "ledger",
+  "points",
+  "measurements",
+  "faults"
+ ],
+ "title": "Pack",
+ "type": "object"
+}

@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "pack_id": "demo_model",
+  "general": false,
+  "name": {"en": "Demo phone (placeholder pack)", "hi": "Demo phone (placeholder pack)"},
+  "aliases": ["demo", "demo phone", "demo model", "redmi demo"],
+  "placeholder": true,
+  "sources": [
+    "PLACEHOLDER: structure only. Every number is invented and must be replaced with measurements from the reference phone.",
+    "No schematics, no customer data (CLAUDE.md rule 8)."
+  ],
+  "symptoms": ["dead", "not_charging"],
+  "safe_power": {
+    "placeholder": true,
+    "voltage_min": 3.8,
+    "voltage_max": 4.2,
+    "voltage_target": 4.0,
+    "current_limit_max": 2.0,
+    "current_limit_target": 1.0
+  },
+  "boot": {
+    "thresholds": {
+      "placeholder": true,
+      "no_current_a": 0.01,
+      "short_connect_a": 0.3,
+      "at_limit_fraction": 0.95,
+      "at_limit_s": 3.0,
+      "drop_fraction": 0.3,
+      "watch_s": 4.0
+    },
+    "patterns": [
+      {"id": "NO_CURRENT", "meaning": {"en": "no current at all: open power path, power key line or a bad boot cable", "hi": "current bilkul nahi: power path open, power key line, ya boot cable kharab"}, "next_checks": ["cable_check", "vbat_conn", "fuse_coil", "pwr_key"]},
+      {"id": "SHORT_IMMEDIATE", "meaning": {"en": "high current at once without pressing power: short on the battery line", "hi": "power dabaye bina turant zyada current: battery line pe short"}, "next_checks": ["vbat_cap_1", "vbat_conn", "heat_check"]},
+      {"id": "RISE_THEN_DROP", "meaning": {"en": "current rises then drops back: the board starts and stops", "hi": "current badhta hai phir gir jata hai: board start hoke ruk jata hai"}, "next_checks": ["pwr_key"]},
+      {"id": "NORMAL_BOOT", "meaning": {"en": "normal start-up current", "hi": "normal start-up current"}, "next_checks": ["port_current", "vbus_port", "chg_ic_in"]},
+      {"id": "AT_LIMIT", "meaning": {"en": "current sits at the supply limit: hard short, disconnect", "hi": "current limit pe atka hai: hard short, disconnect karo"}, "next_checks": ["vbat_cap_1", "heat_check"]}
+    ]
+  },
+  "ledger": {"placeholder": true, "other_prior": 0.05, "planning_confidence": 0.9},
+  "points": [
+    {
+      "id": "vbat_conn", "side": "top", "xy": [398, 210], "mode": "diode",
+      "label": {"en": "Battery connector, VBAT pin", "hi": "Battery connector ka VBAT pin"},
+      "probe_note": {"en": "Red probe on ground, black on the VBAT pin", "hi": "Red probe ground pe, black VBAT pin pe"},
+      "reference": {"placeholder": true, "value": 0.35, "tolerance": 0.05, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.25},
+        {"class": "normal", "lo": 0.25, "hi": 0.6}, {"class": "high", "lo": 0.6, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    },
+    {
+      "id": "vbat_cap_1", "side": "top", "xy": [412, 233], "mode": "diode",
+      "label": {"en": "Large capacitor beside the battery connector", "hi": "Battery connector ke paas bada capacitor"},
+      "probe_note": {"en": "Red probe on ground, black on the capacitor", "hi": "Red probe ground pe, black capacitor pe"},
+      "reference": {"placeholder": true, "value": 0.35, "tolerance": 0.05, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.25},
+        {"class": "normal", "lo": 0.25, "hi": 0.6}, {"class": "high", "lo": 0.6, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    },
+    {
+      "id": "fuse_coil", "side": "top", "xy": [455, 260], "mode": "ohm",
+      "label": {"en": "Series coil on the battery line, under the shield", "hi": "Battery line ki series coil, shield ke neeche"},
+      "probe_note": {"en": "One probe on each end of the coil", "hi": "Coil ke dono ends pe ek ek probe"},
+      "reference": {"placeholder": true, "value": 0.2, "tolerance": 0.5, "unit": "ohm", "bands": [
+        {"class": "normal", "lo": 0.0, "hi": 5.0}, {"class": "high", "lo": 5.0, "hi": 1000.0},
+        {"class": "open", "lo": 1000.0, "ol": true}]}
+    },
+    {
+      "id": "pwr_key", "side": "top", "xy": [120, 520], "mode": "diode",
+      "label": {"en": "Power key line at the side button", "hi": "Side button pe power key line"},
+      "probe_note": {"en": "Red probe on ground, black on the power key pad", "hi": "Red probe ground pe, black power key pad pe"},
+      "reference": {"placeholder": true, "value": 0.45, "tolerance": 0.05, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.3},
+        {"class": "normal", "lo": 0.3, "hi": 0.7}, {"class": "high", "lo": 0.7, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    },
+    {
+      "id": "vbus_port", "side": "bottom", "xy": [300, 880], "mode": "diode",
+      "label": {"en": "Charging port, VBUS pin", "hi": "Charging port ka VBUS pin"},
+      "probe_note": {"en": "Red probe on ground, black on the VBUS pin", "hi": "Red probe ground pe, black VBUS pin pe"},
+      "reference": {"placeholder": true, "value": 0.4, "tolerance": 0.05, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.25},
+        {"class": "normal", "lo": 0.25, "hi": 0.7}, {"class": "high", "lo": 0.7, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    },
+    {
+      "id": "chg_ic_in", "side": "bottom", "xy": [330, 760], "mode": "diode",
+      "label": {"en": "Charging IC input, after the port protection", "hi": "Charging IC ka input, port protection ke baad"},
+      "probe_note": {"en": "Red probe on ground, black on the input capacitor", "hi": "Red probe ground pe, black input capacitor pe"},
+      "reference": {"placeholder": true, "value": 0.45, "tolerance": 0.05, "unit": "diode_V", "bands": [
+        {"class": "short", "lo": 0.0, "hi": 0.05}, {"class": "low", "lo": 0.05, "hi": 0.25},
+        {"class": "normal", "lo": 0.25, "hi": 0.7}, {"class": "high", "lo": 0.7, "hi": 1.5},
+        {"class": "open", "lo": 1.5, "ol": true}]}
+    }
+  ],
+  "measurements": [
+    {"id": "cable_check", "kind": "observation", "healthy": "ok", "placeholder": true, "cost": 1,
+     "label": {"en": "boot cable and supply check", "hi": "boot cable aur supply check"},
+     "classes": ["faulty", "ok"],
+     "keywords": {
+       "faulty": ["faulty", "not ok", "not working", "broken", "loose", "kharab", "theek nahi", "nahi chal", "tuta", "dheela"],
+       "ok": ["ok", "okay", "fine", "working", "good", "theek", "sahi", "chal raha", "badhiya"]}},
+    {"id": "boot_pattern", "kind": "boot_pattern", "placeholder": true, "cost": 3, "requires_power": "connect_boot_cable",
+     "label": {"en": "boot current pattern", "hi": "boot current pattern"},
+     "classes": ["NO_CURRENT", "SHORT_IMMEDIATE", "RISE_THEN_DROP", "NORMAL_BOOT", "AT_LIMIT"]},
+    {"id": "vbat_conn", "kind": "point", "point_id": "vbat_conn", "placeholder": true, "cost": 1,
+     "label": {"en": "diode reading at the battery connector VBAT pin", "hi": "battery connector VBAT pin pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]},
+    {"id": "vbat_cap_1", "kind": "point", "point_id": "vbat_cap_1", "placeholder": true, "cost": 1,
+     "label": {"en": "diode reading at the battery-line capacitor", "hi": "battery line capacitor pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]},
+    {"id": "fuse_coil", "kind": "point", "point_id": "fuse_coil", "placeholder": true, "cost": 2,
+     "label": {"en": "resistance across the battery-line coil", "hi": "battery line coil ka resistance"},
+     "classes": ["normal", "high", "open"]},
+    {"id": "pwr_key", "kind": "point", "point_id": "pwr_key", "placeholder": true, "cost": 1,
+     "label": {"en": "diode reading on the power key line", "hi": "power key line pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]},
+    {"id": "heat_check", "kind": "observation", "healthy": "none", "placeholder": true, "cost": 2, "requires_power": "connect_boot_cable",
+     "label": {"en": "heat or rosin check on the battery line", "hi": "battery line pe heat ya rosin check"},
+     "classes": ["none", "cap_hot", "ic_hot"],
+     "keywords": {
+       "none": ["nothing hot", "no heat", "not hot", "kuch garam nahi", "koi garam nahi", "garam nahi", "nahi garam"],
+       "cap_hot": ["capacitor hot", "cap hot", "capacitor is hot", "capacitor garam", "capacitor gets hot", "capacitor pe rosin", "कैपेसिटर गरम"],
+       "ic_hot": ["ic hot", "chip hot", "ic is hot", "ic garam", "chip garam", "power ic", "pmic", "आईसी गरम"]}},
+    {"id": "port_current", "kind": "port_current", "placeholder": true, "cost": 3, "requires_power": "connect_port_supply",
+     "label": {"en": "current drawn through the charging port", "hi": "charging port se current"},
+     "classes": ["none", "low", "normal"],
+     "bands": [{"class": "none", "lo": 0.0, "hi": 0.02}, {"class": "low", "lo": 0.02, "hi": 0.3}, {"class": "normal", "lo": 0.3}]},
+    {"id": "vbus_port", "kind": "point", "point_id": "vbus_port", "placeholder": true, "cost": 1,
+     "label": {"en": "diode reading at the charging port VBUS pin", "hi": "charging port VBUS pin pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]},
+    {"id": "chg_ic_in", "kind": "point", "point_id": "chg_ic_in", "placeholder": true, "cost": 2,
+     "label": {"en": "diode reading at the charging IC input", "hi": "charging IC input pe diode reading"},
+     "classes": ["short", "low", "normal", "high", "open"]}
+  ],
+  "faults": [
+    {"id": "vbat_cap_short", "family": "short_battery_line", "placeholder": true,
+     "name": {"en": "Shorted capacitor on the battery line", "hi": "Battery line pe capacitor short"},
+     "priors": {"dead": 0.25, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "SHORT_IMMEDIATE", "vbat_conn": "short", "vbat_cap_1": "short", "fuse_coil": "normal", "pwr_key": "normal", "heat_check": "cap_hot", "vbus_port": "normal", "chg_ic_in": "normal"},
+     "fix": {"en": "Remove the shorted capacitor beside the battery connector, then re-check the line.", "hi": "Battery connector ke paas wala short capacitor nikaalo, phir line dobara check karo."},
+     "explain": {
+       "trainee": {"en": "A capacitor on the battery line has failed short, so current flows straight to ground the moment power is connected.", "hi": "Battery line ka ek capacitor short ho gaya hai, isliye power lagate hi current seedha ground mein jata hai."},
+       "expert": {"en": "Battery-line cap shorted: immediate draw, near-zero diode on VBAT, the cap heats under injection.", "hi": "VBAT cap short: turant draw, VBAT pe diode lagbhag zero, injection pe cap garam."}}},
+    {"id": "pmic_vbat_short", "family": "short_battery_line", "placeholder": true,
+     "name": {"en": "Power IC shorted on the battery line", "hi": "Battery line pe power IC short"},
+     "priors": {"dead": 0.12, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "SHORT_IMMEDIATE", "vbat_conn": "short", "vbat_cap_1": "short", "fuse_coil": "normal", "pwr_key": "normal", "heat_check": "ic_hot", "vbus_port": "normal", "chg_ic_in": "normal"},
+     "fix": {"en": "The power IC is shorted. Needs IC replacement by a technician.", "hi": "Power IC short hai. Technician se IC replace karwana hoga."},
+     "explain": {
+       "trainee": {"en": "The power IC itself is shorted inside, so the whole battery line reads near zero and the IC gets hot.", "hi": "Power IC andar se short hai, isliye poori battery line zero ke paas dikhti hai aur IC garam hota hai."},
+       "expert": {"en": "PMIC short on VBAT: same line readings as a cap short; heat locates it at the IC.", "hi": "VBAT pe PMIC short: cap short jaisi readings; heat se IC pe pata chalta hai."}}},
+    {"id": "bad_boot_cable", "family": "no_current", "placeholder": true,
+     "name": {"en": "Faulty boot cable or supply lead", "hi": "Boot cable ya supply lead kharab"},
+     "priors": {"dead": 0.08, "not_charging": 0.01},
+     "predicts": {"cable_check": "faulty", "boot_pattern": "NO_CURRENT", "vbat_conn": "normal", "vbat_cap_1": "normal", "fuse_coil": "normal", "pwr_key": "normal", "heat_check": "none", "vbus_port": "normal", "chg_ic_in": "normal"},
+     "fix": {"en": "Replace or re-seat the boot cable and check the supply leads.", "hi": "Boot cable badlo ya theek se lagao, supply leads check karo."},
+     "explain": {
+       "trainee": {"en": "No current can also mean the cable never reached the board. Check it first: it is the cheapest check.", "hi": "Current na aaye to ho sakta hai cable board tak pahunchi hi nahi. Pehle yahi check karo, sabse aasaan hai."},
+       "expert": {"en": "Common false lead for no-current: cable or lead fault.", "hi": "No-current ka common false lead: cable ya lead fault."}}},
+    {"id": "open_vbat_path", "family": "no_current", "placeholder": true,
+     "name": {"en": "Open coil on the battery line", "hi": "Battery line ki coil open"},
+     "priors": {"dead": 0.15, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NO_CURRENT", "vbat_conn": "open", "vbat_cap_1": "normal", "fuse_coil": "open", "pwr_key": "normal", "heat_check": "none", "vbus_port": "normal", "chg_ic_in": "normal"},
+     "fix": {"en": "Replace the open series coil on the battery line.", "hi": "Battery line ki open series coil badlo."},
+     "explain": {
+       "trainee": {"en": "The coil that carries battery current is broken, so nothing reaches the board.", "hi": "Battery current le jaane wali coil tooti hai, isliye board tak kuch nahi pahunchta."},
+       "expert": {"en": "Open series element on VBAT: connector side reads OL, board side normal.", "hi": "VBAT pe series element open: connector side OL, board side normal."}}},
+    {"id": "power_key_line", "family": "no_current", "placeholder": true,
+     "name": {"en": "Fault on the power key line", "hi": "Power key line mein fault"},
+     "priors": {"dead": 0.12, "not_charging": 0.01},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NO_CURRENT", "vbat_conn": "normal", "vbat_cap_1": "normal", "fuse_coil": "normal", "pwr_key": "open", "heat_check": "none", "vbus_port": "normal", "chg_ic_in": "normal"},
+     "fix": {"en": "Repair the power key line: check the key and its track.", "hi": "Power key line theek karo: key aur uska track check karo."},
+     "explain": {
+       "trainee": {"en": "The battery line is fine, but the power key signal never reaches the power IC, so it never starts.", "hi": "Battery line theek hai, par power key ka signal power IC tak nahi pahunchta, isliye start nahi hota."},
+       "expert": {"en": "Open power key line: VBAT normal, key line OL.", "hi": "Power key line open: VBAT normal, key line OL."}}},
+    {"id": "port_damaged", "family": "not_charging", "placeholder": true,
+     "name": {"en": "Damaged charging port", "hi": "Charging port kharab"},
+     "priors": {"dead": 0.01, "not_charging": 0.35},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NORMAL_BOOT", "vbat_conn": "normal", "vbat_cap_1": "normal", "fuse_coil": "normal", "pwr_key": "normal", "heat_check": "none", "port_current": "none", "vbus_port": "open", "chg_ic_in": "normal"},
+     "fix": {"en": "Replace the charging port.", "hi": "Charging port badlo."},
+     "explain": {
+       "trainee": {"en": "The port's VBUS pin no longer connects to the board, so no charging current gets in.", "hi": "Port ka VBUS pin board se connect nahi hota, isliye charging current andar nahi aata."},
+       "expert": {"en": "Port open on VBUS: no port current, VBUS OL, charging path normal.", "hi": "VBUS pe port open: port current nahi, VBUS OL, charging path normal."}}},
+    {"id": "charge_path_part", "family": "not_charging", "placeholder": true,
+     "name": {"en": "Failed part in the charging path", "hi": "Charging path ka part kharab"},
+     "priors": {"dead": 0.01, "not_charging": 0.30},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NORMAL_BOOT", "vbat_conn": "normal", "vbat_cap_1": "normal", "fuse_coil": "normal", "pwr_key": "normal", "heat_check": "none", "port_current": "none", "vbus_port": "normal", "chg_ic_in": "short"},
+     "fix": {"en": "Replace the failed charging-path part after the port protection.", "hi": "Port protection ke baad wala kharab charging part badlo."},
+     "explain": {
+       "trainee": {"en": "The port is fine, but a part after it has failed, so the charging IC never gets power.", "hi": "Port theek hai, par uske baad ka part kharab hai, isliye charging IC ko power nahi milti."},
+       "expert": {"en": "Charging path fault: VBUS normal, IC input shorted.", "hi": "Charging path fault: VBUS normal, IC input short."}}},
+    {"id": "cable_or_charger", "family": "not_charging", "placeholder": true,
+     "name": {"en": "Board fine: the cable or charger is at fault", "hi": "Board theek: cable ya charger kharab"},
+     "priors": {"dead": 0.01, "not_charging": 0.20},
+     "predicts": {"cable_check": "ok", "boot_pattern": "NORMAL_BOOT", "vbat_conn": "normal", "vbat_cap_1": "normal", "fuse_coil": "normal", "pwr_key": "normal", "heat_check": "none", "port_current": "normal", "vbus_port": "normal", "chg_ic_in": "normal"},
+     "fix": {"en": "No board fault found: try a known-good cable and charger.", "hi": "Board mein fault nahi: achha cable aur charger try karo."},
+     "explain": {
+       "trainee": {"en": "With a good supply on the port the board draws normal current, so the board itself charges.", "hi": "Port pe achhi supply se board normal current leta hai, matlab board khud charge karta hai."},
+       "expert": {"en": "Normal port current with a bench supply: external fault.", "hi": "Bench supply se port current normal: bahar ka fault."}}}
+  ],
+  "glossary": {
+    "diode_mode": {"en": "Diode mode shows the voltage drop across a junction, in volts.", "hi": "Diode mode junction ka voltage drop dikhata hai, volt mein."},
+    "boot_current": {"en": "Boot current is the current the board draws when it is powered and switched on.", "hi": "Boot current woh current hai jo board power aur switch on hone pe leta hai."},
+    "vbat": {"en": "VBAT is the main supply line from the battery connector into the board.", "hi": "VBAT battery connector se board mein jaane wali main supply line hai."},
+    "current_limit": {"en": "The current limit caps how much current the supply will give, which protects the board.", "hi": "Current limit supply ka maximum current hai, jo board ko bachata hai."},
+    "short": {"en": "A short is a near-zero resistance path to ground.", "hi": "Short matlab ground tak lagbhag zero resistance ka raasta."},
+    "ol": {"en": "OL means open: no connection between the probes.", "hi": "OL matlab open: probes ke beech connection nahi."}
+  }
+}
