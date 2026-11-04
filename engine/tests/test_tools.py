@@ -105,7 +105,6 @@ def test_unknown_tool():
         ("close_repair", {"result": "maybe"}),
         ("watch_boot_current", {"trigger": "whenever"}),
         ("explain", {"topic": "x", "level": "guru"}),
-        ("next_step", {"anything": 1}),
         ("get_reading", "{not json"),
         ("get_reading", '["kind"]'),
     ],
@@ -115,6 +114,13 @@ def test_bad_args_are_rejected_before_any_handler_runs(name, args):
     out, ok, _ = call(c, name, args)
     assert not ok and out == {"error": "bad_args"}
     assert c.repair.evidence == [] and c.repair.ledger is None
+
+
+def test_next_step_ignores_whatever_the_model_passes():
+    c = ctx()
+    call(c, "start_repair", MINIMAL_ARGS["start_repair"])
+    out, ok, _ = call(c, "next_step", {"step": "fix", "fault": "vbat_cap", "fix": "remove it"})
+    assert ok and out["step"] == "measure" and out["measurement"] == "vbat_conn"  # the engine's choice
 
 
 def test_args_may_arrive_as_a_json_string_or_empty_string():

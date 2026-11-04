@@ -17,11 +17,19 @@ from mcp_evidence.packs.schema import SCHEMA_VERSION, Pack  # noqa: E402
 from mcp_evidence.schema import EvidenceRecord  # noqa: E402
 
 OUT = ROOT / "packs" / "schema"
+COMPLETENESS_RULE = (
+    "Completeness rule: a fault must predict the healthy class ('normal') at every point where it "
+    "leaves the board healthy. A missing prediction means 'no opinion' (1/K for any reading), so "
+    "faults that spell out their normal readings win on readings that say nothing about the real "
+    "cause. Leave a prediction out only when the fault says nothing about the measurement. "
+    "Enforced by engine/tests/test_packs.py::test_every_fault_predicts_every_point."
+)
 
 
 def schemas() -> dict[str, dict]:
     pack = Pack.model_json_schema(by_alias=True)
     pack["$id"] = f"https://benchmate.local/schema/pack.v{SCHEMA_VERSION}.json"
+    pack["$comment"] = COMPLETENESS_RULE
     evidence = EvidenceRecord.model_json_schema()
     evidence["$id"] = "https://benchmate.local/schema/evidence.json"
     return {f"pack.v{SCHEMA_VERSION}.schema.json": pack, "evidence.schema.json": evidence}

@@ -87,6 +87,41 @@ def test_every_fault_predicts_every_point(pack):
         assert missing == [], (f.id, missing)
 
 
+@pytest.mark.parametrize("pack", all_packs(), ids=lambda p: p.pack_id)
+def test_only_port_current_may_be_left_without_a_prediction(pack):
+    """The rule beyond points: boot pattern and observations are predicted by every fault too.
+    The one deliberate gap: a dead-phone fault has no opinion on charging-port current."""
+    for f in pack.faults:
+        missing = {m.id for m in pack.measurements if m.id not in f.predicts}
+        assert missing <= {"port_current"}, (f.id, missing)
+        if "port_current" in missing:
+            assert f.family != "not_charging", f.id
+
+
+def test_a_gap_in_the_predictions_picks_the_wrong_fault():
+    """Why the rule exists. The board has a power key fault and every reading so far is normal.
+    With power_key_line's "normal" predictions removed, those readings say nothing for it, and
+    bad_boot_cable (which spells them out) takes the lead even though the cable reads OK."""
+    from engine.ledger import Ledger, Observation
+
+    raw = load_pack("demo_model").model_dump(by_alias=True)
+    for f in raw["faults"]:
+        if f["id"] == "power_key_line":  # keep only its distinguishing predictions
+            f["predicts"] = {"pwr_key": "open", "boot_pattern": "NO_CURRENT"}
+    gappy = Pack.model_validate(raw)
+    evidence = [("boot_pattern", "NO_CURRENT"), ("cable_check", "ok"), ("vbat_conn", "normal"),
+                ("fuse_coil", "normal"), ("vbat_cap_1", "normal")]
+
+    def leader(pack):
+        led = Ledger(pack, "dead")
+        for i, (mid, out) in enumerate(evidence):
+            led.add(Observation(f"e{i}", mid, out, 0.95))
+        return led.leader()[0]
+
+    assert leader(load_pack("demo_model")) == "power_key_line"
+    assert leader(gappy) == "bad_boot_cable"
+
+
 def test_pack_validation_rejects_inconsistent_predictions():
     raw = DEMO.model_dump(by_alias=True)
     raw["faults"][0]["predicts"]["vbat_conn"] = "melted"
@@ -121,7 +156,16 @@ def test_point_bands(value, is_open, cls):
 
 @pytest.mark.parametrize(
     "text,cls",
-    [("capacitor garam ho raha hai", "cap_hot"), ("IC is hot", "ic_hot"), ("kuch garam nahi hua", "none"), ("nothing hot", "none"), ("pata nahi", None)],
+    [
+        ("capacitor garam ho raha hai", "cap_hot"), ("IC is hot", "ic_hot"), ("kuch garam nahi hua", "none"),
+        ("nothing hot", "none"), ("pata nahi", None),
+        # said the way people say it (4 Nov e2e run): words in between the phrase's words
+        ("Nothing is getting hot.", "none"), ("The capacitor is getting hot.", "cap_hot"),
+        ("capacitor garam nahi ho raha", "none"), ("the IC is getting really hot", "ic_hot"),
+        # mixed sentences ("not the capacitor, the IC is hot") can match the wrong class: the
+        # read-back ("capacitor hot, sahi?") is what catches those
+        ("hot", None),
+    ],
 )
 def test_observation_keywords(text, cls):
     assert classify_keywords(DEMO.measurement("heat_check"), text) == cls

@@ -10,14 +10,15 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-DANGER_ANYWHERE = ["smoke", "smoking", "dhuan", "dhuaan", "dhua", "fire", "aag lag", "sparking", "धुआं", "धुआँ", "आग"]
-BATTERY_WORDS = ["battery", "batt", "बैटरी"]
+DANGER_ANYWHERE = ["smoke", "smoking", "dhuan", "dhuaan", "dhua", "fire", "aag lag", "sparking", "धुआं", "धुआँ", "धुंआ", "आग"]
+BATTERY_WORDS = ["battery", "batt", "बैटरी", "बैट्री", "बेटरी"]
 BATTERY_DANGER = [
     "swollen", "swelling", "bulging", "puffed", "puncture", "punctured", "hot", "garam", "phool", "phoola", "phooli",
     "phul", "phula", "phuli", "fula", "fuli", "fooli", "leak", "leaking", "फूल", "फूली", "गरम", "गर्म",
 ]
-NEGATIONS = ["nahi", "nahin", "not", "no", "without", "bina", "नहीं", "बिना"]
-REMOVED = ["removed", "nikal", "nikaal", "nikali", "nikaali", "hata", "hatai", "hataya", "disconnected", "out", "bahar", "निकाल", "हटा"]
+NEGATIONS = ["nahi", "nahin", "not", "no", "without", "bina", "नहीं", "नही", "बिना"]
+REMOVED = ["removed", "nikal", "nikaal", "nikali", "nikaali", "hata", "hatai", "hataya", "disconnected", "out", "bahar",
+           "निकाल", "निकल", "हटा", "बाहर"]
 CONNECTED = ["connected", "laga", "lagi", "lagaya", "lagai", "attached", "fitted", "inside", "in place", "लगी", "लगा"]
 OUT_OF_SCOPE_DEVICES = [
     "charger", "adapter", "adaptor", "tv", "television", "laptop", "mains", "230v", "230 volt", "220v", "220 volt",
@@ -31,13 +32,19 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+|[\u0900-\u097f]+", text.lower())
 
 
+def _devanagari_match(word: str, term: str) -> bool:
+    """Whole word, or a stem of 3+ characters at the start of the word (फूली, गरमी, निकाली).
+    Never a substring: "आग" (fire) must not match "आगे" (ahead)."""
+    return word == term or (len(term) >= 3 and word.startswith(term))
+
+
 def _hits(words: list[str], terms: list[str]) -> list[int]:
     """Word indices where any term matches (multi-word terms match at their first word)."""
     out = []
     for i, w in enumerate(words):
         for t in terms:
             parts = t.split()
-            if words[i : i + len(parts)] == parts or (not t.isascii() and len(parts) == 1 and t in w):
+            if words[i : i + len(parts)] == parts or (not t.isascii() and len(parts) == 1 and _devanagari_match(w, t)):
                 out.append(i)
                 break
     return out

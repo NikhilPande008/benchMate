@@ -137,5 +137,7 @@ def test_websocket_reconnect_after_an_engine_restart_resumes_the_repair(settings
         ws.send_json(hello)
         ready = ws.receive_json()
         assert ready["restored"]["measured"] == ["vbat_conn"] and ready["restored"]["state"] == "probing"
+        note = ws.receive_json()  # context for the voice model, not an instructions update
+        assert note["type"] == "inject" and note["urgent"] is False and "repair continues" in note["text"]
         nxt = tool(ws, "b1", "next_step")
         assert nxt["step"] == "power" and nxt["measurement"] == "heat_check"  # continues, doesn't restart

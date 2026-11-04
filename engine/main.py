@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from engine.api import realtime, ws
+from engine.api import dev, realtime, ws
 from engine.config import Settings
 from engine.telemetry import TelemetryStore
 
@@ -22,6 +22,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = settings
         app.state.telemetry = TelemetryStore(settings.db_path)
+        app.state.connections = ws.Connections()
         app.state.http = http_client or httpx.AsyncClient()
         app.state.mint = realtime.make_minter(settings, app.state.http)
         app.state.secret_pool = realtime.SecretPool(realtime.make_minter(settings, app.state.http, settings.pool_secret_ttl_s))
@@ -40,6 +41,7 @@ def create_app(
     app = FastAPI(title="Benchmate engine", lifespan=lifespan)
     app.include_router(realtime.router)
     app.include_router(ws.router)
+    app.include_router(dev.router)
 
     @app.get("/health")
     async def health() -> dict[str, object]:

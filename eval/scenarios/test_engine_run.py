@@ -92,7 +92,7 @@ def test_every_power_step_was_approved_by_the_gate_first():
         approved = 0
         for c in res.calls:
             out = json.loads(c.output)
-            if c.tool == "request_power_step" and out.get("approved"):
+            if c.tool in ("request_power_step", "next_step") and out.get("approved"):
                 approved += 1
             needs_power = c.tool == "watch_boot_current" or c.args.get("kind") == "port_current" or (
                 c.tool == "record_spoken_reading" and c.args.get("confirm") and out.get("class") in ("cap_hot", "ic_hot", "none"))

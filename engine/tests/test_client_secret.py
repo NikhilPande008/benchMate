@@ -30,12 +30,7 @@ def test_mints_secret_with_decided_session_settings(client, fake_openai, setting
     session = body["session"]
     assert session["type"] == "realtime"
     assert session["model"] == settings.realtime_model_mini
-    assert session["audio"]["input"]["turn_detection"] == {
-        "type": "semantic_vad",
-        "eagerness": "medium",
-        "create_response": True,
-        "interrupt_response": True,
-    }
+    assert session["audio"]["input"]["turn_detection"] is None  # push-to-talk by default
     assert session["reasoning"] == {"effort": "low"}
     assert session["truncation"] == {
         "type": "retention_ratio",
@@ -50,8 +45,26 @@ def test_api_key_never_returned_to_browser(client):
     assert FAKE_KEY not in resp.text
 
 
-def test_default_model_is_flagship(client, settings):
-    assert client.post("/realtime/client-secret", json={}).json()["config"]["model"] == settings.realtime_model
+def test_decided_defaults(client, settings):
+    """CLAUDE.md "Settings that are already decided" as changed on 4 Nov: push-to-talk, the mini
+    model, the local preamble clip, an output cap of 220 tokens."""
+    cfg = client.post("/realtime/client-secret", json={}).json()["config"]
+    assert cfg["model"] == settings.realtime_model_mini
+    assert cfg["turn_mode"] == "ptt" and cfg["turn_detection"] is None
+    assert cfg["preamble"] == "local" and cfg["prompt"] == "v3_local"
+    assert cfg["max_output_tokens"] == 220
+
+
+def test_flagship_on_request_and_by_config(client, settings):
+    assert client.post("/realtime/client-secret", json={"model": "flagship"}).json()["config"]["model"] == settings.realtime_model
+    settings.default_model = "flagship"
+    assert settings.resolve_model(None) == settings.realtime_model
+
+
+def test_semantic_vad_stays_selectable(client, fake_openai):
+    cfg = client.post("/realtime/client-secret", json={"turn_mode": "semantic_medium", "use_pool": False}).json()["config"]
+    assert cfg["turn_detection"] == {"type": "semantic_vad", "eagerness": "medium", "create_response": True, "interrupt_response": True}
+    assert _session(fake_openai)["audio"]["input"]["turn_detection"]["type"] == "semantic_vad"
 
 
 def test_rejects_models_not_on_the_allow_list(client, fake_openai):

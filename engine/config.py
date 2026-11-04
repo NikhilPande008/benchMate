@@ -34,6 +34,7 @@ class Settings(BaseModel):
     openai_base_url: str = "https://api.openai.com/v1"
     realtime_model: str = "gpt-realtime-2.1"
     realtime_model_mini: str = "gpt-realtime-2.1-mini"
+    default_model: str = "mini"  # "mini" | "flagship": what a request without a model gets (decided 4 Nov)
     voice: str = "marin"
     # Transcripts are for the screen and the log only; the model reasons on audio.
     # gpt-4o-mini-transcribe (the SDK default) is deprecated, shutdown 2027-02-26.
@@ -42,8 +43,12 @@ class Settings(BaseModel):
     client_secret_ttl_s: int = 120
     secret_pool: bool = True  # keep one pre-minted secret per session config, so connecting skips the mint
     pool_secret_ttl_s: int = 600  # pooled secrets wait in engine memory; refreshed before they expire
-    turn_mode: str = "semantic_medium"  # see engine.api.realtime.TURN_MODES
-    prompt: str = "v2_local"  # see engine.session.prompt.PROMPTS; chosen in eval/REPORT-2026-11-04.md
+    # see engine.api.realtime.TURN_MODES. Push-to-talk decided 4 Nov (eval/REPORT-2026-11-04.md);
+    # semantic VAD stays switchable from the page. The talk key (default Space) is a page setting.
+    turn_mode: str = "ptt"
+    # see engine.session.prompt.PROMPTS. v3_local (8 tools, local clip) since the Phase 2 spoken
+    # runs (eval/REPORT-2026-11-06.md); v2_local knows only get_reading.
+    prompt: str = "v3_local"
     # Safety net only: about 8 s of speech. Measured 4 Nov: 20 audio tokens per second of reply,
     # plus transcript text tokens (0.3-0.8x the audio tokens); output_tokens = audio + text.
     # None = no cap ("inf").
@@ -70,6 +75,7 @@ class Settings(BaseModel):
             openai_base_url=env.get("OPENAI_BASE_URL", defaults.openai_base_url),
             realtime_model=env.get("BENCHMATE_REALTIME_MODEL", defaults.realtime_model),
             realtime_model_mini=env.get("BENCHMATE_REALTIME_MODEL_MINI", defaults.realtime_model_mini),
+            default_model=env.get("BENCHMATE_DEFAULT_MODEL", defaults.default_model),
             voice=env.get("BENCHMATE_VOICE", defaults.voice),
             transcription_model=env.get("BENCHMATE_TRANSCRIPTION_MODEL", defaults.transcription_model),
             reasoning_effort=env.get("BENCHMATE_REASONING_EFFORT", defaults.reasoning_effort),
@@ -92,7 +98,7 @@ class Settings(BaseModel):
     def resolve_model(self, requested: str | None) -> str | None:
         """Map "flagship"/"mini" (or an exact allowed name) to a model id. None if not allowed."""
         aliases = {
-            None: self.realtime_model,
+            None: self.realtime_model_mini if self.default_model == "mini" else self.realtime_model,
             "flagship": self.realtime_model,
             "mini": self.realtime_model_mini,
             self.realtime_model: self.realtime_model,

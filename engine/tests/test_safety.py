@@ -188,6 +188,16 @@ def test_barge_in_cancels_a_pending_power_step():
         ("battery connected nahi hai", "removed"),
         ("capacitor garam ho raha hai", None),
         ("supply four volt pe set hai", None),
+        # Devanagari, as gpt-transcribe writes Hinglish speech (seen in the 4 Nov e2e run)
+        ("सप्लाई सेट है, आगे बैटे ओ।", None),  # "aage" (ahead) is not "aag" (fire)
+        ("सप्लाई सेट है, आगे बताओ", None),
+        ("बोर्ड में आग लग गई", "danger"),
+        ("धुआँ आ रहा है", "danger"),
+        ("बैटरी गरम हो रही है", "danger"),
+        ("बैटरी गरम नहीं है", None),
+        ("डेमो फोन है, बिल्कुल डेड है, बैटरी निकल दी है।", "removed"),
+        ("बैटरी निकाली हुई है", "removed"),
+        ("बैटरी लगी हुई है", "connected"),
     ],
 )
 def test_battery_reports(text, report):

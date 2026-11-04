@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -71,10 +72,23 @@ def load_stored_repair(telemetry: TelemetryStore, session_id: str) -> Stored | N
     return state, [(EvidenceRecord.model_validate_json(r.data), r.ledger_use) for r in rows]
 
 
+class Connections(OrderedDict[str, "Connection"]):
+    """Live and recent connections by session id, for the dev endpoints (newest kept)."""
+
+    KEEP = 50
+
+    def add(self, conn: "Connection") -> None:
+        self[conn.hello.session_id] = conn
+        self.move_to_end(conn.hello.session_id)
+        while len(self) > self.KEEP:
+            self.popitem(last=False)
+
+
 class Connection:
     def __init__(self, ws: WebSocket, settings: Settings, telemetry: TelemetryStore, hello: Hello,
                  stored: Stored | None = None):
         self.ws = ws
+        self.connected = True
         self.settings = settings
         self.telemetry = telemetry
         self.hello = hello
@@ -99,6 +113,10 @@ class Connection:
             except (RuntimeError, WebSocketDisconnect):  # closed: late UI events have nowhere to go
                 log.debug("dropped %s after close", msg.get("type"))
 
+    async def set_scenario(self, name: str) -> None:
+        self.bench.set_scenario(name)
+        await self.send({"type": "ui", "event": "dev.scenario", "scenario": name})
+
     def span(self, span_name: str, turn: int, **attrs: Any) -> None:
         self.telemetry.record(
             self.hello.session_id,
@@ -114,14 +132,15 @@ class Connection:
 
     async def _run_tool(self, call: ToolCall) -> None:
         ctx = ToolContext(repair=self.repair)
-        self.span("tool_started", call.turn, name=call.name, call_id=call.call_id)
+        args = call.args if isinstance(call.args, str) else one_line(call.args)
+        self.span("tool_started", call.turn, name=call.name, call_id=call.call_id, args=args[:300])
         await self.send({"type": "ui", "event": "tool.started", "name": call.name, "call_id": call.call_id})
         try:
             output, ok = await run_tool(call.name, call.args, ctx)
         except Exception:  # the voice model must always get an answer, never a hang
             log.exception("tool %s crashed", call.name)
             output, ok = one_line({"error": "tool_failed"}), False
-        self.span("tool_finished", call.turn, name=call.name, call_id=call.call_id, ok=ok)
+        self.span("tool_finished", call.turn, name=call.name, call_id=call.call_id, ok=ok, output=output)
         await self.send({"type": "tool_result", "call_id": call.call_id, "output": output})
         await self.send({"type": "ui", "event": "tool.finished", "name": call.name, "call_id": call.call_id, "ok": ok})
 
@@ -144,10 +163,15 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     await telemetry.flush()  # a reconnect may follow writes that are still queued
     stored = await asyncio.to_thread(load_stored_repair, telemetry, hello.session_id)
     conn = Connection(ws, settings, telemetry, hello, stored)
+    connections = getattr(ws.app.state, "connections", None)
+    if connections is not None:
+        connections.add(conn)
     ready: dict[str, Any] = {"type": "ready", "session_id": hello.session_id, "scenario": conn.bench.scenario}
     if stored:
         ready["restored"] = conn.repair.summary()
     await conn.send(ready)
+    if stored and conn.repair.state in ("probing", "fix"):
+        await conn.repair.note("The engine reconnected; the repair continues. Call next_step before the next instruction.")
     try:
         while True:
             msg = await ws.receive_json()
@@ -165,9 +189,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         await conn.repair.on_user_transcript(tr.text, lang_tag(tr.text))
                 elif kind == "event" and msg.get("name") == "barge_in":
                     conn.repair.on_barge_in()
-                elif kind == "dev" and msg.get("scenario") in SCENARIOS:
-                    conn.bench.set_scenario(msg["scenario"])
-                    await conn.send({"type": "ui", "event": "dev.scenario", "scenario": msg["scenario"]})
+                elif kind == "dev" and msg.get("scenario") in SCENARIOS and settings.dev_endpoints:
+                    await conn.set_scenario(msg["scenario"])
                 elif kind == "dev":
                     await conn.send({"type": "error", "detail": f"unknown scenario {msg.get('scenario')!r}"})
                 else:
@@ -177,4 +200,5 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        conn.connected = False
         conn.cancel_all()

@@ -48,6 +48,8 @@ CONFIGS: dict[str, dict] = {
     # Second prompt iteration (latest-turn language, one-sentence replies) with the local preamble.
     "v2_b": {"turn_mode": "semantic_medium", "prompt": "v2_local", "cap": True},
     "v2_b_ptt": {"turn_mode": "ptt", "prompt": "v2_local", "cap": True},
+    # Phase 2: the 8-tool prompt (decided defaults: push-to-talk, local clip, cap).
+    "v3_b_ptt": {"turn_mode": "ptt", "prompt": "v3_local", "cap": True},
 }
 
 BROWSER_ARGS = [

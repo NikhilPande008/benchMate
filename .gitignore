@@ -36,3 +36,6 @@ eval/latency_script/runs/
 .DS_Store
 .vscode/
 .idea/
+# End-to-end spoken runs: generated clips and run artefacts (eval/scenarios/voice_run.py)
+eval/scenarios/audio/
+eval/scenarios/runs/

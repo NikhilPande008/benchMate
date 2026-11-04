@@ -13,8 +13,8 @@ import {
   type TransportEvent,
 } from '@openai/agents-realtime';
 
-import { EngineSocket, type UiEvent } from './engine';
-import { clipLangFor, LocalPreamble, type PreamblePath } from './preamble';
+import { EngineSocket, type EngineNote, type UiEvent } from './engine';
+import { clipLangFor, LocalPreamble, type PreambleLang, type PreamblePath } from './preamble';
 import { nowMs, Spans, watchAudioOnset } from './telemetry';
 
 type ToolSpec = { type: 'function'; name: string; description: string; parameters: Record<string, unknown> };
@@ -35,6 +35,10 @@ export type VoiceConfig = {
   max_output_tokens: number | null;
   transcription: Record<string, unknown>;
   tools: ToolSpec[];
+  /** Browser-side SDK timeout per tool: a little longer than the engine's own timeout. */
+  tool_timeouts_ms?: Record<string, number>;
+  /** Dev controls (null when the engine's dev endpoints are off). */
+  dev?: { scenarios: string[]; scenario: string } | null;
 };
 
 type ClientSecretResponse = {
@@ -67,6 +71,10 @@ export type VoiceOptions = {
   outputCap?: boolean | null;
   usePool?: boolean;
   pttKey?: string;
+  /** Fake bench scenario for this connection (dev). */
+  scenario?: string | null;
+  /** Debug: a span for every incoming server event (deltas excepted). */
+  traceEvents?: boolean;
   /** Harness only: an injected stream instead of the microphone. */
   micStream?: MediaStream;
   preamblePath?: PreamblePath;
@@ -80,6 +88,8 @@ export type LiveState = {
   lastActivity: number;
   lastSpeechEnd: number;
   userLang: string | null;
+  /** The engine's session language (two consecutive turns to switch); picks the preamble clip. */
+  sessionLang: PreambleLang | null;
   pttDown: boolean;
 };
 
@@ -96,6 +106,8 @@ export type VoiceHandle = {
   pttDown: () => void;
   pttUp: () => void;
   clipPlaying: () => boolean;
+  scenario: () => string | null;
+  setScenario: (name: string) => void;
   /** Diagnostics: the WebRTC peer connection to OpenAI. */
   peer: () => RTCPeerConnection | null;
   stop: () => void;
@@ -183,7 +195,12 @@ const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
 
 export async function startVoice(opts: VoiceOptions): Promise<VoiceHandle> {
-  const engine = new EngineSocket((ev) => opts.onEvent({ kind: 'ui', event: ev }));
+  let onUi: (ev: UiEvent) => void = () => {};
+  const engine = new EngineSocket((ev) => {
+    onUi(ev);
+    opts.onEvent({ kind: 'ui', event: ev });
+  });
+  const setUiHook = (hook: (ev: UiEvent) => void) => (onUi = hook);
   const spans = new Spans(engine);
   const stage = (name: string, attrs?: Record<string, unknown>, t?: number) => {
     const s = spans.record(name, attrs, t);
@@ -218,7 +235,7 @@ export async function startVoice(opts: VoiceOptions): Promise<VoiceHandle> {
   });
   try {
     const [mic, secret] = await Promise.all([micP, secretP]);
-    return await connectSession(opts, mic, secret, engine, spans, stage);
+    return await connectSession(opts, mic, secret, engine, spans, stage, setUiHook);
   } catch (err) {
     micP.then((m) => !opts.micStream && m.getTracks().forEach((t) => t.stop())).catch(() => {});
     engine.close();
@@ -233,6 +250,7 @@ async function connectSession(
   engine: EngineSocket,
   spans: Spans,
   stage: (name: string, attrs?: Record<string, unknown>, t?: number) => void,
+  setUiHook: (hook: (ev: UiEvent) => void) => void,
 ): Promise<VoiceHandle> {
   const { onEvent } = opts;
   const cfg = secret.config;
@@ -244,6 +262,7 @@ async function connectSession(
     lastActivity: nowMs(),
     lastSpeechEnd: 0,
     userLang: null,
+    sessionLang: null,
     pttDown: false,
   };
   const touch = () => {
@@ -254,9 +273,12 @@ async function connectSession(
   let preamble: LocalPreamble | null = null;
   let peer: RTCPeerConnection | null = null;
 
+  setUiHook((ev) => {
+    if (ev.event === 'session.lang' && (ev.lang === 'en' || ev.lang === 'hi')) state.sessionLang = ev.lang;
+  });
   const engineReady = engine
-    .connect({ session_id: secret.session_id, run_id: runId, dummy_delay_s: opts.dummyDelayS ?? null })
-    .then(() => stage('engine_ready'));
+    .connect({ session_id: secret.session_id, run_id: runId, dummy_delay_s: opts.dummyDelayS ?? null, scenario: opts.scenario ?? null })
+    .then(() => stage('engine_ready', { scenario: engine.scenario }));
   if (cfg.preamble === 'local') {
     void LocalPreamble.create((n, a, t) => spans.record(n, a, t), opts.preamblePath).then((p) => (preamble = p));
   }
@@ -267,7 +289,8 @@ async function connectSession(
       description: spec.description,
       parameters: spec.parameters as never,
       strict: true,
-      timeoutMs: 8000,
+      // Readings and boot watches take seconds; the SDK's own default would cut them off.
+      timeoutMs: cfg.tool_timeouts_ms?.[spec.name] ?? 8000,
       timeoutBehavior: 'error_as_result',
       execute: async (input, _ctx, details) => {
         const callId = details?.toolCall?.callId ?? crypto.randomUUID();
@@ -325,9 +348,34 @@ async function connectSession(
     traceMetadata: { prompt_version: cfg.prompt_version, run_id: runId ?? '' },
   });
 
+  // Barge-in: the user starts talking while the agent speaks or a reply is in flight. The engine
+  // cancels any pending power approval, so a power step is never acted on half-heard.
+  const bargeInIfBusy = (via: string) => {
+    if (!state.audioPlaying && state.responsesInFlight === 0) return;
+    spans.record('barge_in', { via });
+    engine.bargeIn();
+  };
+
+  // Engine notes go in as system items; instructions and tools never change (rule 7). Urgent
+  // ones interrupt the agent and get a reply at once; others are context for the next turn.
+  const injectNote = (note: EngineNote) => {
+    spans.record('engine_note', { urgent: note.urgent, chars: note.text.length });
+    if (note.urgent && (state.audioPlaying || state.responsesInFlight > 0)) session.interrupt();
+    session.transport.sendEvent({
+      type: 'conversation.item.create',
+      item: { type: 'message', role: 'system', content: [{ type: 'input_text', text: note.text }] },
+    });
+    if (note.urgent) session.transport.sendEvent({ type: 'response.create' });
+  };
+
+  // One clip per user turn: chained tool calls (reading, then next_step) must not stutter.
+  let clipTurn = -1;
   let awaitingFirstAudio = false;
   session.on('transport_event', (ev: TransportEvent) => {
     const e = ev as TransportEvent & Record<string, any>;
+    if (opts.traceEvents && typeof e.type === 'string' && !e.type.endsWith('.delta')) {
+      spans.record('server_event', { type: e.type, response_id: e.response_id ?? e.response?.id, item: e.item?.type });
+    }
     switch (e.type) {
       case 'session.created':
         stage('session_created');
@@ -345,6 +393,7 @@ async function connectSession(
       }
       case 'input_audio_buffer.speech_started':
         touch();
+        if (turnMode !== 'ptt') bargeInIfBusy('vad');
         spans.record('speech_started', { audio_start_ms: e.audio_start_ms, item_id: e.item_id });
         break;
       case 'input_audio_buffer.speech_stopped': {
@@ -365,8 +414,12 @@ async function connectSession(
       case 'response.output_item.added':
         if (e.item?.type === 'function_call') {
           spans.record('tool_call_started', { call_id: e.item.call_id, name: e.item.name });
-          // Local preamble: the earliest signal that a tool call is coming.
-          if (preamble && !state.audioPlaying) preamble.play(e.item.call_id, clipLangFor(state.userLang));
+          // Local preamble: the earliest signal that a tool call is coming. The clip speaks the
+          // session language (engine-chosen), falling back to this turn's tag before the first one.
+          if (preamble && !state.audioPlaying && clipTurn !== spans.turn) {
+            clipTurn = spans.turn;
+            preamble.play(e.item.call_id, state.sessionLang ?? clipLangFor(state.userLang));
+          }
         }
         break;
       case 'output_audio_buffer.started': {
@@ -439,6 +492,7 @@ async function connectSession(
     state.pttDown = true;
     touch();
     spans.record('ptt_down');
+    bargeInIfBusy('ptt');
     if (state.audioPlaying || state.responsesInFlight > 0) session.interrupt();
     session.transport.sendEvent({ type: 'input_audio_buffer.clear' });
     session.mute(false);
@@ -486,6 +540,8 @@ async function connectSession(
 
   onEvent({ kind: 'status', text: `connecting ${cfg.model}…` });
   await Promise.all([engineReady, session.connect({ apiKey: secret.client_secret })]);
+  traceOutgoing(transport, spans);
+  engine.setNoteHandler(injectNote);
   stage('ready', { model: cfg.model, prompt_version: cfg.prompt_version, turn_mode: turnMode });
   if (turnMode === 'ptt') session.mute(true);
   recordConnectDetails(spans, peer);
@@ -507,6 +563,8 @@ async function connectSession(
     pttDown,
     pttUp,
     clipPlaying: () => preamble?.isPlaying ?? false,
+    scenario: () => engine.scenario,
+    setScenario: (name: string) => engine.devScenario(name),
     peer: () => peer,
     stop: () => {
       window.removeEventListener('keydown', onKeyDown);
@@ -519,6 +577,40 @@ async function connectSession(
       window.setTimeout(() => engine.close(), 300);
       onEvent({ kind: 'status', text: 'disconnected' });
     },
+  };
+}
+
+const TRACED_OUT = new Set(['response.create', 'response.cancel', 'conversation.item.create', 'input_audio_buffer.commit', 'output_audio_buffer.clear']);
+
+/**
+ * Wraps the data channel's send: spans for the client events that start, stop or feed responses,
+ * including the SDK's own (its response.create after a tool result goes through a private
+ * sequencer), and drops the SDK's `conversation.item.retrieve`.
+ *
+ * Why drop it: agents-realtime 0.21.0 retrieves every user item once its transcription completes.
+ * The reply carries the whole item, including the user's audio, and on the WebRTC data channel it
+ * holds up every event behind it for 2-6 s (measured 4 Nov, eval/REPORT-2026-11-06.md): the model's
+ * reply plays, but response.created and the next tool call arrive seconds late. We never use the
+ * retrieved item (transcripts come from ...transcription.completed), so we don't ask for it.
+ */
+function traceOutgoing(transport: OpenAIRealtimeWebRTC, spans: Spans): void {
+  const dc = transport.connectionState.dataChannel;
+  if (!dc) return;
+  const send = dc.send.bind(dc) as (data: string) => void;
+  (dc as { send: (data: string) => void }).send = (data: string) => {
+    try {
+      const m = JSON.parse(data) as { type?: string; event_id?: string; item_id?: string; item?: { type?: string; role?: string } };
+      if (m.type === 'conversation.item.retrieve') {
+        spans.record('client_event_dropped', { type: m.type, item_id: m.item_id });
+        return;
+      }
+      if (m.type && TRACED_OUT.has(m.type)) {
+        spans.record('client_event', { type: m.type, event_id: m.event_id, item: m.item ? `${m.item.type}${m.item.role ? `:${m.item.role}` : ''}` : undefined });
+      }
+    } catch {
+      /* not JSON: pass through */
+    }
+    send(data);
   };
 }
 

@@ -1,4 +1,5 @@
 {
+ "$comment": "Completeness rule: a fault must predict the healthy class ('normal') at every point where it leaves the board healthy. A missing prediction means 'no opinion' (1/K for any reading), so faults that spell out their normal readings win on readings that say nothing about the real cause. Leave a prediction out only when the fault says nothing about the measurement. Enforced by engine/tests/test_packs.py::test_every_fault_predicts_every_point.",
  "$defs": {
   "Band": {
    "additionalProperties": false,

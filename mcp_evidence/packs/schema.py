@@ -4,6 +4,16 @@ A pack is data, never instructions: points to measure, the outcome classes of ea
 faults with the outcome each one predicts, safe power settings and boot-pattern thresholds.
 Every object that carries a number has a `placeholder` flag: true means the number was invented
 for development and must be replaced by measurements from the reference phone.
+
+COMPLETENESS RULE: a fault must predict "normal" (the measurement's healthy class) at every
+point where it leaves the board healthy. A missing prediction means "no opinion" and scores 1/K
+for any reading, while a spelled-out "normal" scores c + (1-c)/K on a normal reading. So on
+readings that say nothing about the real cause, the fault that spells out more normal readings
+wins. Leave a prediction out only when the fault really says nothing about the measurement
+(here: charging-port current for a dead-phone fault).
+Enforced by engine/tests/test_packs.py::test_every_fault_predicts_every_point and
+::test_only_port_current_may_be_left_without_a_prediction; the failure it prevents is shown in
+::test_a_gap_in_the_predictions_picks_the_wrong_fault.
 """
 from __future__ import annotations
 

@@ -26,6 +26,28 @@ const storedKey = (() => {
 })();
 
 type Line = { who: 'you' | 'benchmate' | 'engine' | 'error' | 'status'; text: string };
+type Ranked = [string, number][];
+
+/** One readable line per engine UI event for the log. */
+function describe(ev: Record<string, unknown>): string {
+  switch (ev.event) {
+    case 'tool.started':
+    case 'tool.finished':
+      return `${ev.event} ${String(ev.name)}`;
+    case 'ledger.updated':
+      return `ledger ${String(ev.measurement)}=${String(ev.outcome)}${ev.conflict ? ` conflict:${String(ev.conflict)}` : ''}${ev.stop ? ' stop' : ''}`;
+    case 'step.proposed':
+      return `step ${String(ev.step)} ${String(ev.measurement ?? '')}`;
+    case 'power.approved':
+    case 'power.blocked':
+    case 'power.cancelled':
+      return `${ev.event} ${String(ev.step)}${ev.reason ? ` (${String(ev.reason)})` : ''}`;
+    case 'watch.sample':
+      return `watch ${String(ev.t_s)} s ${String(ev.current_a)} A`;
+    default:
+      return String(ev.event);
+  }
+}
 
 declare global {
   interface Window {
@@ -53,6 +75,10 @@ export function App() {
   const [pttKey, setPttKeyState] = useState(params.get('ptt_key') ?? storedKey ?? 'Space');
   const [pttDown, setPttDown] = useState(false);
   const [audioLocked, setAudioLocked] = useState(false);
+  const [scenario, setScenarioState] = useState<string | null>(params.get('scenario'));
+  const [scenarios, setScenarios] = useState<string[]>([]);
+  const [top, setTop] = useState<Ranked>([]);
+  const [step, setStep] = useState<string>('');
   const handle = useRef<VoiceHandle | null>(null);
   const started = useRef(false);
 
@@ -70,9 +96,16 @@ export function App() {
         case 'assistant':
           push({ who: 'benchmate', text: ev.text });
           break;
-        case 'ui':
-          push({ who: 'engine', text: `${ev.event.event} ${String(ev.event.name ?? '')}` });
+        case 'ui': {
+          const u = ev.event;
+          if (u.event === 'watch.sample') break; // too chatty for the log
+          if (u.event === 'dev.scenario') setScenarioState(String(u.scenario));
+          if ((u.event === 'ledger.updated' || u.event === 'repair.started') && Array.isArray(u.top)) setTop(u.top as Ranked);
+          if (u.event === 'step.proposed') setStep(`${String(u.step)}: ${String(u.measurement ?? '')}${u.power_step ? ` (${String(u.power_step)})` : ''}`);
+          if (u.event === 'fix.proposed') setStep(`fix: ${String(u.fault)} → check ${String(u.check)}`);
+          push({ who: 'engine', text: describe(u) });
           break;
+        }
         case 'latency':
           setLatencies((ls) => [...ls.slice(-30), { turn: ev.turn, ms: ev.firstAudioMs }]);
           break;
@@ -109,11 +142,15 @@ export function App() {
         outputCap: params.has('cap') ? flag('cap', true) : null,
         usePool: flag('pool', true),
         pttKey,
+        scenario: params.get('scenario'),
+        traceEvents: flag('trace', false),
         micStream: harness?.stream,
         preamblePath: params.get('preamble_path') === 'element' ? 'element' : 'webrtc',
         onEvent,
       });
       setTurnModeState(handle.current.turnMode());
+      setScenarios(handle.current.config.dev?.scenarios ?? []);
+      setScenarioState(handle.current.scenario());
     } catch (err) {
       setStatus('error');
       push({ who: 'error', text: String((err as Error).message ?? err) });
@@ -201,7 +238,32 @@ export function App() {
           />
         </label>
         {turnMode === 'ptt' && <span className={pttDown ? 'ptt on' : 'ptt'}>{pttDown ? 'listening' : `hold ${pttKey} to talk`}</span>}
+        {scenarios.length > 0 && (
+          <label>
+            Fake bench{' '}
+            <select value={scenario ?? ''} onChange={(e) => handle.current?.setScenario(e.target.value)} disabled={!connected} data-testid="scenario">
+              {scenarios.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </section>
+      {top.length > 0 && (
+        <section className="ledger" data-testid="ledger">
+          <h2>ledger</h2>
+          <ol>
+            {top.map(([fault, p]) => (
+              <li key={fault}>
+                {fault} <span className="p">{p.toFixed(2)}</span>
+              </li>
+            ))}
+          </ol>
+          {step && <p className="step">{step}</p>}
+        </section>
+      )}
       <section className="latency">
         <h2>speech end → first audio</h2>
         <ol>

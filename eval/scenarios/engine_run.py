@@ -146,8 +146,9 @@ class Technician:
             gate = await self.call("request_power_step", step=step)
         return bool(gate.get("approved"))
 
-    async def measure_powered(self, measurement_id: str, power_step: str) -> bool:
-        if not await self.power(power_step):
+    async def measure_powered(self, measurement_id: str, power_step: str, approved: bool = False) -> bool:
+        """`approved`: next_step already asked the gate and it said yes."""
+        if not approved and not await self.power(power_step):
             return False
         if measurement_id == "boot_pattern":
             await self.call("watch_boot_current", trigger="on_connect")
@@ -195,7 +196,7 @@ class Technician:
                 res.rechecks += 1
             res.steps += 1
             if kind == "power":
-                if not await self.measure_powered(mid, step["power_step"]):
+                if not await self.measure_powered(mid, step["power_step"], bool(step.get("approved"))):
                     res.outcome = "blocked"
                     return res
             elif step.get("point"):

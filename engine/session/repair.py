@@ -14,11 +14,14 @@ from typing import Any, Awaitable, Callable
 
 from engine.ledger import Ledger, Observation, Snapshot, Step, candidates, next_step as choose_next_step
 from engine.safety import (
+    APPROVED,
     DISCONNECT_NOW,
     REFUSE_DEVICE,
+    STALE_S,
     STOP_MESSAGE,
     Approvals,
     AtLimitWatchdog,
+    GateResult,
     battery_report,
     check_power,
     device_out_of_scope,
@@ -35,6 +38,13 @@ Notify = Callable[[dict[str, Any]], Awaitable[None]]
 CAMERA_MIN_CONFIDENCE = 0.9  # below this a camera read is "unclear": ask to re-read or say it
 SPOKEN_CONFIDENCE = 0.7  # a spoken reading, until it is read back and confirmed
 CONFIRMED_CONFIDENCE = 0.85
+USE_TOOL = {  # the tool that records the answer to a step (in the step line, for the voice model)
+    "point": "get_reading",  # or record_spoken_reading if the user says the value; not in the line (length)
+    "observation": "record_spoken_reading",
+    "boot_pattern": "watch_boot_current",
+    "port_current": "get_reading",
+}
+SUPPLY_REFRESH_MARGIN_S = 5.0  # re-read the supply for a power step if the reading is older than 15 s
 CONFIRM_WORDS = {"haan", "han", "haa", "yes", "yeah", "yep", "sahi", "correct", "right", "ji", "bilkul", "hm", "हाँ", "हां", "सही", "जी"}
 CANCEL_WORDS = {"ruko", "rukiye", "stop", "wait", "ruk", "रुको", "रुकिए"}
 PLAUSIBLE = {"diode": (0.0, 3.0), "dcv": (0.0, 30.0), "ohm": (0.0, 1e7), "current": (0.0, 5.0)}
@@ -48,6 +58,32 @@ OBSERVATION_WORDS = {
 SYMPTOM_WORDS = {"not_charging": ["charg", "चार्ज"]}
 
 
+def _fits(m: Measurement, text: str | None) -> bool:
+    """Whether the words can answer this measurement: an observation's keywords, or a number/OL."""
+    if m.kind == "observation":
+        return classify_keywords(m, text or "") is not None
+    if m.kind == "boot_pattern":
+        return False
+    return parse(text or "").ok
+
+
+def _names(m: Measurement, text: str | None) -> bool:
+    """Whether the words name this measurement's point ("VBUS", "power key", "fuse")."""
+    words = set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    ident = m.point_id or m.id
+    parts = [p for p in ident.split("_") if len(p) >= 4 and not p.isdigit()]
+    return bool(words & set(parts)) or ident.replace("_", " ") in " ".join(sorted(words))
+
+
+WORD_RE = r"[a-z]+|[\u0900-\u0963\u0966-\u097f]+"  # Latin or Devanagari words, without the danda (।)
+
+
+def _is_confirmation(text: str | None) -> bool:
+    """A plain yes ("haan", "haan sahi hai", "हाँ, सही है", "yes that's right")."""
+    words = set(re.findall(WORD_RE, (text or "").lower()))
+    return bool(words) and bool(words & CONFIRM_WORDS) and words <= CONFIRM_WORDS | {"hai", "ho", "he", "that", "s", "it", "is", "है"}
+
+
 def _symptom(text: str | None) -> str:
     t = (text or "").lower()
     return "not_charging" if any(w in t for w in SYMPTOM_WORDS["not_charging"]) else "dead"
@@ -58,6 +94,7 @@ class Readback:
     record: EvidenceRecord
     measurement_id: str | None
     say: str
+    user_confirmed: bool = False  # the user's own words after the read-back were a plain "yes"
 
 
 @dataclass
@@ -115,6 +152,23 @@ class RepairSession:
     def _persist(self, table: str, row: dict[str, Any]) -> None:
         if self.persist:
             self.persist(table, row)
+
+    async def note(self, text: str, urgent: bool = False) -> None:
+        """A short engine message into the voice conversation (never an instructions update, rule 7).
+        Urgent ones interrupt and get an immediate reply; others are context for the next turn."""
+        msg = {"type": "inject", "urgent": urgent, "text": f"[engine] {text}"}
+        self._event("engine.note", urgent=urgent, text=msg["text"])
+        if self.inject:
+            await self.inject(msg)
+
+    def _note_soon(self, text: str, urgent: bool = False) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self.note(text, urgent))
+        self._sends.add(task)
+        task.add_done_callback(self._sends.discard)
 
     # --- persistence: state + ordered evidence rebuild the session after a restart --------------
 
@@ -262,9 +316,11 @@ class RepairSession:
             changed = True
         if changed:
             self._save()
-        words = set(re.findall(r"[a-z]+|[ऀ-ॿ]+", text.lower()))
+        words = set(re.findall(WORD_RE, text.lower()))
         if words & CANCEL_WORDS and self._watch and not self._watch.done():
             self._watch.cancel()
+        if self.readback_pending:
+            self.readback_pending.user_confirmed = _is_confirmation(text)
 
     def on_barge_in(self) -> None:
         cancelled = self.approvals.cancel()
@@ -278,8 +334,7 @@ class RepairSession:
             self._watch.cancel()
         self._event("safety.stop", reason=reason)
         self._save()
-        if self.inject:
-            await self.inject({"type": "inject", "urgent": True, "text": f"[engine] SAFETY STOP. Say exactly: {STOP_MESSAGE[self.lng]}"})
+        await self.note(f"SAFETY STOP. Say exactly: {STOP_MESSAGE[self.lng]}", urgent=True)
 
     # --- tools --------------------------------------------------------------------------------
 
@@ -290,6 +345,9 @@ class RepairSession:
         if refused:
             self._event("scope.refused", device=refused)
             return {"refused": True, "reason": "device_out_of_scope", "say": REFUSE_DEVICE[self.lng]}
+        if not (model or "").strip():
+            # seen 4 Nov: the voice model dropped "demo phone" and got the general flow
+            return {"ask": "phone_model", "hint": 'pass model "unknown" if the user does not know it'}
         self.pack, self.model_data = model_lookup(model)
         self.symptom = _symptom(symptom)
         self.ledger = Ledger(self.pack, self.symptom)
@@ -315,10 +373,12 @@ class RepairSession:
         if down and not self.degraded:
             self.degraded = "camera_unavailable"
             self._event("degraded", reason=self.degraded)
+            self._note_soon("Camera unavailable: ask the user to read every value aloud. No power steps until it is back.")
             self._save()
         elif not isinstance(rec, EvidenceError) and self.degraded:
             self.degraded = None
             self._event("degraded", reason=None)
+            self._note_soon("Camera is back.")
             self._save()
 
     def _read_aloud(self, measurement_id: str | None, err: str, **extra: Any) -> dict[str, Any]:
@@ -371,9 +431,13 @@ class RepairSession:
             pid = self._measurement(self.fix_check).point_id
         if pid is None and self.pending_step and self.pending_step.point_id:
             pid = self.pending_step.point_id
-        m = self.pack.measurement_for_point(pid) if (self.pack and pid) else None
         if pid and self.pack and pid not in {p.id for p in self.pack.points}:
-            return {"error": "unknown_point", "point": pid}
+            # not a pack point (the voice model made it up): read the point the engine asked for
+            asked = self._target(None)
+            if asked is None or not asked.point_id:
+                return {"error": "unknown_point", "point": pid}
+            pid = asked.point_id
+        m = self.pack.measurement_for_point(pid) if (self.pack and pid) else None
         rec = await self._timed(self.bench.read_meter(self.session_id, pid, None))
         self._camera(rec)
         mid = m.id if m else None
@@ -395,6 +459,10 @@ class RepairSession:
     async def watch_boot_current(self, trigger: str = "on_connect") -> dict[str, Any]:
         if err := self._require_repair():
             return err
+        waiting = self._target(None)
+        if waiting is not None and waiting.id != "boot_pattern":
+            # the approval is for another check (seen 4 Nov: the heat check's approval spent on a watch)
+            return {"error": "not_this_step", "measurement": waiting.id, "use": USE_TOOL[waiting.kind]}
         step = "connect_boot_cable" if trigger == "on_connect" else "press_power_key"
         if not self.approvals.consume(step):
             return {"error": "power_step_required", "step": step}
@@ -434,12 +502,16 @@ class RepairSession:
         return out | self._ledger_line(snap, rec)
 
     def _target(self, point_id: str | None) -> Measurement | None:
+        """The measurement a spoken reading answers: a known point or measurement id, else the one
+        the engine is waiting for. An id the pack doesn't know (the voice model made it up) falls
+        back to that, and the read-back names the point, so the user can correct it."""
         if not self.pack:
             return None
         if point_id:
             if point_id in {m.id for m in self.pack.measurements}:
                 return self._measurement(point_id)
-            return self.pack.measurement_for_point(point_id)
+            if point_id in {p.id for p in self.pack.points}:
+                return self.pack.measurement_for_point(point_id)
         fix = self.fix_check if self.state == "fix" else None
         for mid in (self.awaiting_spoken, fix, self.remeasure, self.pending_step.measurement_id if self.pending_step else None):
             if mid:
@@ -449,10 +521,16 @@ class RepairSession:
     async def record_spoken_reading(self, text: str | None = None, point_id: str | None = None, confirm: bool = False) -> dict[str, Any]:
         if err := self._require_repair():
             return err
-        words = set(re.findall(r"[a-z]+|[ऀ-ॿ]+", (text or "").lower()))
-        if self.readback_pending and (confirm or (words and words <= CONFIRM_WORDS | {"hai", "ho", "he"})):
+        if self.readback_pending and (confirm or _is_confirmation(text)):
             return self._confirm_readback()
         m = self._target(point_id)
+        pending = self._target(None)
+        if (m is not None and pending is not None and pending.id != m.id and _fits(pending, text)
+                and (not _fits(m, text) or not _names(m, text))):
+            # The engine chooses what is measured (rule 1): words that fit the waiting step answer it,
+            # unless they name the other point. Seen 4 Nov: "0.02 volt aa raha hai" for the charging
+            # IC input sent as vbus_port, and "capacitor garam" sent with the previous point's id.
+            m = pending
         if m is None:
             return {"error": "which_point", "ask": "which_point"}
         if m.kind == "boot_pattern":
@@ -477,6 +555,8 @@ class RepairSession:
                                  value=r.value, unit=r.base_unit, open=r.open, source="spoken",
                                  confidence=SPOKEN_CONFIDENCE, needs_confirmation=True)
             say = readback(r)
+            if m.point_id and self.pack:  # name the point, so a wrong one is heard in the read-back
+                say = f"{say}, {getattr(self.pack.point(m.point_id).label, self.lng).split(',')[0]}"
         self.readback_pending = Readback(rec, m.id, say)
         self._event("readback", measurement=m.id, say=say)
         return {"status": "readback", "say": say, "point": m.point_id or m.id, "conf": SPOKEN_CONFIDENCE, "ask": "confirm"}
@@ -508,14 +588,22 @@ class RepairSession:
         if err := self._require_repair():
             return err
         assert self.ledger and self.pack
+        if self.readback_pending and self.readback_pending.user_confirmed:
+            # The user said "haan, sahi hai" but the voice model asked for the next step instead of
+            # confirming (seen 4 Nov: a 15-turn loop). Their own words confirm it; record and go on.
+            done = self._confirm_readback()
+            if "error" in done:
+                return done
+            nxt = await self._next_step()
+            return {"recorded": done["recorded"], "class": done["class"]} | {k: v for k, v in nxt.items() if k != "reason"}
         if self.readback_pending:
-            return {"step": "confirm_readback", "say": self.readback_pending.say}
+            return {"step": "confirm_readback", "say": self.readback_pending.say, "use": "record_spoken_reading", "confirm": True}
         if self.state == "unresolved":
             return {"step": "unresolved", "top": self._top(2), "say": "evidence conflicts; record as unresolved"}
         if self.remeasure:
             self.pending_step = None
             reason = "an earlier reading looks wrong; measure it again" if self.lng == "en" else "pehle wali reading galat lag rahi hai; dobara measure karo"
-            return self._step_line(self.remeasure, "remeasure", reason)
+            return await self._step_out(self.remeasure, "remeasure", reason)
         if self.ledger.stop():
             fid, p = self.ledger.ranked()[0]
             if self.fix_fault != fid:
@@ -532,8 +620,26 @@ class RepairSession:
             out: dict[str, Any] = {"step": "unresolved", "top": self._top(2)}
             return out | ({"degraded": self.degraded} if self.degraded else {})
         self.pending_step = step
-        out = self._step_line(step.measurement_id, "measure", step.reason(self.ledger, self.lng))
+        out = await self._step_out(step.measurement_id, "measure", step.reason(self.ledger, self.lng))
         return out | ({"degraded": self.degraded} if self.degraded else {})
+
+    async def _step_out(self, mid: str, kind: str, reason: str) -> dict[str, Any]:
+        """The step line; for a step that needs power, with the safety gate's answer already in it.
+        The voice model then has the gate's exact sentence (or the block and what to set) instead
+        of a step name it might turn into its own power instruction (seen 4 Nov: "boot cable
+        connect karo" with no approval). The approval is the gate's, single-use, as for
+        request_power_step."""
+        out = self._step_line(mid, kind, reason)
+        if out["step"] != "power":
+            return out
+        gate = await self._gate(out["power_step"])
+        del out["reason"], out["set"]  # explain("why") still gives the reason; the gate says what to set
+        out |= {"approved": gate.approved, "say": gate.say}
+        if gate.reason:
+            out["blocked"] = gate.reason
+        if gate.set_values:
+            out["set"] = gate.set_values
+        return out
 
     def _choose_fix_check(self, fault_id: str) -> str:
         """The abnormal reading that did most to point at the fault; after the fix it must read
@@ -556,6 +662,8 @@ class RepairSession:
         assert self.pack
         m = self._measurement(mid)
         out: dict[str, Any] = {"step": kind, "measurement": mid, "reason": reason}
+        if m.kind != "point":
+            out["use"] = USE_TOOL[m.kind]
         if m.point_id:
             p = self.pack.point(m.point_id)
             out |= {"point": p.id, "mode": p.mode, "where": getattr(p.label, self.lng), "probes": getattr(p.probe_note, self.lng)}
@@ -570,33 +678,57 @@ class RepairSession:
     async def request_power_step(self, step: str) -> dict[str, Any]:
         if self.pack is None:
             return {"error": "start_repair_first"}
+        return (await self._gate(step)).line()
+
+    async def _gate(self, step: str) -> GateResult:
+        """The safety gate (CLAUDE.md rule 2), with a fresh supply read if needed. An approval is
+        single-use and is cancelled by a barge-in."""
+        assert self.pack
+        await self._fresh_supply(step)
         res = check_power(step, self.supply, self.pack, self.battery, self.stopped)  # type: ignore[arg-type]
         if res.approved:
             approval = self.approvals.grant(step)
             self._event("power.approved", step=step, id=approval.id)
         else:
             self._event("power.blocked", step=step, reason=res.reason)
-        return res.line()
+        return res
+
+    async def _fresh_supply(self, step: str) -> None:
+        """The gate needs a camera supply reading younger than 20 s. If there is none, or it would
+        go stale before the user acts, read the supply now instead of making the voice model ask
+        for it. The gate itself is unchanged: it still checks the reading's age and confidence."""
+        if self.stopped or self.battery != "removed" or step not in APPROVED:
+            return
+        if self.supply is not None and self.supply.age_s() < STALE_S - SUPPLY_REFRESH_MARGIN_S:
+            return
+        rec = await self._timed(self.bench.read_supply(self.session_id))
+        self._camera(rec)
+        if isinstance(rec, EvidenceRecord):
+            self.supply = rec
+            self._add_evidence(rec)
 
     async def explain(self, topic: str, level: str | None = None) -> dict[str, Any]:
         lvl = level if level in ("trainee", "expert") else self.level
         pack = self.pack or model_lookup(None)[0]
         t = topic.lower().strip().replace(" ", "_")
-        text = None
+        text: tuple[str, str] | None = None  # (en, hi)
         for f in pack.faults:
             if t in (f.id, f.name.en.lower().replace(" ", "_")) or f.id in t:
-                text = getattr(f.explain[lvl], self.lng)  # type: ignore[index]
+                e = f.explain[lvl]  # type: ignore[index]
+                text = (e.en, e.hi)
         for key, entry in pack.glossary.items():
             if text is None and (key == t or key in t):
-                text = getattr(entry, self.lng)
+                text = (entry.en, entry.hi)
         for p in pack.boot.patterns:
             if text is None and p.id.lower() == t:
-                text = getattr(p.meaning, self.lng)
+                text = (p.meaning.en, p.meaning.hi)
         if text is None and t in ("why", "reason", "next", "why_this_step") and self.pending_step and self.ledger:
-            text = self.pending_step.reason(self.ledger, self.lng)
+            text = (self.pending_step.reason(self.ledger, "en"), self.pending_step.reason(self.ledger, "hi"))
         if text is None:
             return {"text": None, "ask": "which_topic"}
-        return {"text": text[:240]}
+        # Both languages: the model answers in the latest turn's language, which can differ from
+        # the session's (seen 4 Nov: English questions answered in Hinglish from a Hindi-only text).
+        return {"text": {"en": text[0][:150], "hi": text[1][:150]}}
 
     async def close_repair(self, result: str, fault_id: str | None = None, note: str | None = None) -> dict[str, Any]:
         if self.ledger is None or self.pack is None:

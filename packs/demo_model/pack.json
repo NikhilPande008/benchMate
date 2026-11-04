@@ -3,7 +3,7 @@
   "pack_id": "demo_model",
   "general": false,
   "name": {"en": "Demo phone (placeholder pack)", "hi": "Demo phone (placeholder pack)"},
-  "aliases": ["demo", "demo phone", "demo model", "redmi demo"],
+  "aliases": ["demo", "demo phone", "demo model", "redmi demo", "डेमो", "डेमो फोन", "डेमो फ़ोन"],
   "placeholder": true,
   "sources": [
     "PLACEHOLDER: structure only. Every number is invented and must be replaced with measurements from the reference phone.",

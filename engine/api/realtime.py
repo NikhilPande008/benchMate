@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 from engine.config import Settings
 from engine.session.prompt import LOCAL_PREAMBLE_PROMPTS, PROMPTS, TRANSCRIPTION_KEYWORDS, load_prompt
 from engine.telemetry import RealtimeSessionRow, TelemetryStore, now_ms
-from engine.tools import tool_specs
+from engine.tools import tool_specs, tool_timeouts_ms
+from mcp_evidence.fake_bench import SCENARIOS
 
 log = logging.getLogger("benchmate.realtime")
 router = APIRouter()
@@ -91,6 +92,8 @@ def voice_config(
             "keywords": TRANSCRIPTION_KEYWORDS,
         },
         "tools": tool_specs(),
+        "tool_timeouts_ms": tool_timeouts_ms(),  # browser-side SDK timeouts, longer than the engine's
+        "dev": {"scenarios": list(SCENARIOS), "scenario": settings.fake_scenario} if settings.dev_endpoints else None,
     }
 
 
@@ -233,9 +236,9 @@ def make_minter(settings: Settings, http: httpx.AsyncClient, ttl_s: int | None =
 
 def default_payload(settings: Settings) -> dict[str, Any]:
     """The config the web page asks for when nothing is overridden (used to pre-warm the pool)."""
-    cfg = voice_config(
-        settings, settings.realtime_model_mini, settings.turn_mode, settings.prompt, settings.max_output_tokens
-    )
+    model = settings.resolve_model(None)
+    assert model is not None
+    cfg = voice_config(settings, model, settings.turn_mode, settings.prompt, settings.max_output_tokens)
     return session_payload(cfg)
 
 

@@ -76,12 +76,31 @@ def classify_point(point: Point, value: float | None, is_open: bool) -> str | No
     return classify_band(point.reference.bands, value, is_open)
 
 
+KEYWORD_GAP = 2  # words allowed between a phrase's words: "nothing is getting hot" ~ "nothing hot"
+
+
+def _phrase_in(phrase: list[str], words: list[str], gap: int = KEYWORD_GAP) -> bool:
+    """The phrase's words in order, each within `gap` words of the one before."""
+    for start in (i for i, w in enumerate(words) if w == phrase[0]):
+        pos, ok = start, True
+        for w in phrase[1:]:
+            nxt = next((j for j in range(pos + 1, min(pos + 2 + gap, len(words))) if words[j] == w), None)
+            if nxt is None:
+                ok = False
+                break
+            pos = nxt
+        if ok:
+            return True
+    return False
+
+
 def classify_keywords(measurement: Measurement, text: str) -> str | None:
     """Observation classes from spoken words. Classes are tried in pack order, so list negations
-    ("kuch garam nahi") before the plain words they contain."""
-    t = f" {_norm(text)} "
+    ("kuch garam nahi") before the plain words they contain. A phrase may have up to two words
+    between its words, as people say it ("the capacitor is getting hot")."""
+    words = _norm(text).split()
     for cls in measurement.classes:
         for kw in (measurement.keywords or {}).get(cls, []):
-            if f" {_norm(kw)} " in t:
+            if _phrase_in(_norm(kw).split(), words):
                 return cls
     return None

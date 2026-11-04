@@ -68,6 +68,13 @@ class NoArgs(ToolArgs):
     pass
 
 
+class NextStepArgs(ToolArgs):
+    """No arguments. The engine alone chooses the step (rule 1), so anything the voice model
+    passes here (it tends to pass the step it expects) is ignored rather than refused."""
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class PowerArgs(ToolArgs):
     step: Literal["connect_boot_cable", "press_power_key", "connect_port_supply"]
 
@@ -151,15 +158,16 @@ TOOLS: dict[str, Tool] = {
         ),
         Tool(
             "next_step",
-            "The engine's next step: what to measure and why, a power step to request, or the fix once a fault is clear.",
-            NoArgs,
+            "The engine's next step: what to measure and why, a power step with the safety gate's answer, or the fix once a fault is clear. Takes no arguments.",
+            NextStepArgs,
             lambda a, c: _r(c).next_step(),
         ),
         Tool(
             "request_power_step",
-            "Ask the safety gate before any power step. Returns the exact sentence to say, or why it is blocked and what to set.",
+            "Ask the safety gate before any power step; it reads the supply itself. Returns the exact sentence to say, or why it is blocked and what to set.",
             PowerArgs,
             lambda a, c: _r(c).request_power_step(a.step),
+            timeout_s=7.0,  # may include a camera read of the supply
         ),
         Tool(
             "explain",
