@@ -143,6 +143,9 @@ class RepairSession:
     events: list[dict[str, Any]] = field(default_factory=list)
     _watch: asyncio.Task | None = None
     _power_sent: int = 0  # approvals.ended entries already sent as power.ended events
+    last_gate: dict[str, Any] | None = None  # the safety gate's last answer, for the screen's power banner
+    vision_level: tuple[str, str | None] = ("full", None)
+    live_watch: list[list[float]] = field(default_factory=list)  # [t_s, current_a] of the running watch
     _sends: set[asyncio.Task] = field(default_factory=set)
 
     # --- plumbing -----------------------------------------------------------------------------
@@ -575,6 +578,7 @@ class RepairSession:
 
     async def on_vision_level(self, level: str, reason: str | None) -> None:
         """The evidence server's degradation ladder changed (full → Reader B only → spoken only)."""
+        self.vision_level = (level, reason)
         self._event("vision.level", level=level, reason=reason)
         await self.note(VISION_NOTE.get(level, VISION_NOTE["full"]))
 
@@ -595,9 +599,12 @@ class RepairSession:
         dog = AtLimitWatchdog(limit_a=limit_a, fraction=t.at_limit_fraction, hold_s=t.at_limit_s)
         urgent = False
 
+        self.live_watch = []
+
         async def on_sample(s: BootSample) -> bool:
             nonlocal urgent
-            self._event("watch.sample", t_s=s.t_s, current_a=s.current_a)
+            self.live_watch.append([s.t_s, s.current_a])
+            self._event("watch.sample", t_s=s.t_s, current_a=s.current_a, limit_a=limit_a)
             if dog.feed(s.t_s, s.current_a):
                 urgent = True
                 self._event("urgent.disconnect", say=DISCONNECT_NOW[self.lng])
@@ -815,6 +822,7 @@ class RepairSession:
         assert self.pack
         await self._fresh_supply(step)
         res = check_power(step, self.supply, self.pack, self.battery, self.stopped)  # type: ignore[arg-type]
+        self.last_gate = res.line() | {"t_ms": round(time.time() * 1000)}
         if res.approved:
             approval, _ = self.approvals.grant(step, settings_of(self.supply))
             self._power_events()  # the one it replaced
@@ -886,6 +894,89 @@ class RepairSession:
         self._save()
         self._event("repair.closed", outcome=result, fault=fid, record=record["id"])
         return {"record": record["id"], "outcome": result, "fault": fid}
+
+    # --- the companion screen ------------------------------------------------------------------
+
+    def screen_state(self) -> dict[str, Any]:
+        """Everything the companion screen shows, in one snapshot (pushed after every change, so a
+        reload or a replay always shows the whole picture)."""
+        pack = self.pack
+        loc = lambda x: {"en": x.en, "hi": x.hi} if x is not None else None  # noqa: E731
+        out: dict[str, Any] = {
+            "session_id": self.session_id, "state": self.state, "symptom": self.symptom, "lang": self.lng,
+            "lang_decided": self.lang.decided, "battery": self.battery, "stopped": self.stopped, "degraded": self.degraded,
+            "vision": {"level": self.vision_level[0], "reason": self.vision_level[1]},
+            "pack": {"id": pack.pack_id, "name": loc(pack.name), "model_data": self.model_data, "placeholder": pack.placeholder} if pack else None,
+            "readback": self.readback_pending.say if self.readback_pending else None,
+        }
+        # faults, ranked, each with the readings that moved it most
+        faults: list[dict[str, Any]] = []
+        if self.ledger and pack:
+            moved: dict[str, list[dict[str, Any]]] = {}
+            active = {o.evidence_id for o in self.ledger.active}
+            for snap in self.ledger.history:
+                ob = snap.observation
+                if ob.evidence_id not in active:
+                    continue
+                for h, d in snap.deltas.items():
+                    if abs(d) >= 0.03:
+                        moved.setdefault(h, []).append({"evidence": ob.evidence_id, "measurement": ob.measurement_id,
+                                                        "outcome": ob.outcome, "delta": round(d, 3)})
+            names = {f.id: loc(f.name) for f in pack.faults}
+            for h, prob in self.ledger.ranked():
+                faults.append({"id": h, "name": names.get(h) or {"en": "unknown fault", "hi": "koi aur fault"}, "p": round(prob, 3),
+                               "moved": sorted(moved.get(h, []), key=lambda m: -abs(m["delta"]))[:3]})
+        out["faults"] = faults
+        # the next step, with where to probe on the reference board
+        step = None
+        if self.pending_step and pack and self.state == "probing":
+            m = self._measurement(self.pending_step.measurement_id)
+            step = {"measurement": m.id, "kind": m.kind, "label": loc(m.label), "power_step": m.requires_power}
+            if m.point_id:
+                pt = pack.point(m.point_id)
+                step |= {"point": pt.id, "point_label": loc(pt.label), "mode": pt.mode, "probes": loc(pt.probe_note),
+                         "side": pt.side, "xy": list(pt.xy) if pt.xy else None}
+        out["step"] = step
+        out["fix"] = {"fault": self.fix_fault, "check": self.fix_check} if self.state == "fix" else None
+        a = self.approvals.pending
+        out["approval"] = (a.line(self.approvals.ttl_s) | {"speakable": self.approvals.speakable() is a,
+                                                          "say": (self.last_gate or {}).get("say")}) if a else None
+        out["gate"] = self.last_gate
+        if pack:
+            sp = pack.safe_power
+            out["safe_power"] = {"volts": sp.voltage_target, "limit_a": sp.current_limit_target, "v_min": sp.voltage_min,
+                                 "v_max": sp.voltage_max, "limit_max": sp.current_limit_max}
+        # readings
+        sup = next((e for e in reversed(self.evidence) if e.kind == "supply"), None)
+        out["supply"] = ({"fields": {k: {"value": v.value, "unit": v.unit, "conf": v.confidence} for k, v in (sup.fields or {}).items()},
+                          "source": sup.source, "conf": sup.confidence, "legible": sup.legible, "t_ms": round(sup.created_at.timestamp() * 1000),
+                          "simulated": sup.simulated} if sup else None)
+        met = next((e for e in reversed(self.evidence) if e.kind in ("meter", "spoken") and e.point_id), None)
+        out["meter"] = self._evidence_line(met) if met else None
+        boot = next((e for e in reversed(self.evidence) if e.kind == "boot_trace" and e.trace), None)
+        watching = bool(self._watch and not self._watch.done())
+        if watching or boot:
+            samples = self.live_watch if watching else [[s.t_s, s.current_a] for s in boot.trace.samples]  # type: ignore[union-attr]
+            limit = boot.trace.limit_a if (boot and not watching) else (pack.safe_power.current_limit_target if pack else 1.0)
+            out["boot"] = {"samples": samples, "pattern": None if watching else boot.outcome, "limit_a": limit, "live": watching}  # type: ignore[union-attr]
+        else:
+            out["boot"] = None
+        out["evidence"] = [self._evidence_line(e) for e in self.evidence[-40:]]
+        return out
+
+    def _evidence_line(self, e: EvidenceRecord) -> dict[str, Any]:
+        label = None
+        if self.pack and e.measurement_id:
+            try:
+                m = self._measurement(e.measurement_id)
+                label = {"en": m.label.en, "hi": m.label.hi}
+            except (KeyError, StopIteration):
+                label = None
+        return {"id": e.id, "kind": e.kind, "measurement": e.measurement_id, "point": e.point_id, "label": label,
+                "value": e.value, "unit": e.unit, "open": e.open, "mode": e.mode, "outcome": e.outcome,
+                "conf": round(e.confidence, 2), "source": e.source, "confirmed": e.confirmed, "simulated": e.simulated,
+                "legible": e.legible, "frame": f"/screen/evidence/{self.session_id}/{e.id}.jpg" if e.frame_paths else None,
+                "pattern": e.trace.pattern if e.trace else None, "t_ms": round(e.created_at.timestamp() * 1000)}
 
     # --- for the dev endpoint and tests -------------------------------------------------------
 

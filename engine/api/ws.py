@@ -1,7 +1,9 @@
 """WebSocket /ws: the browser relays tool calls here and receives UI events.
 
 Browser -> engine
-  {"type":"hello","session_id":..,"run_id":..,"dummy_delay_s":..,"scenario":..}
+  {"type":"hello","session_id":..,"run_id":..,"dummy_delay_s":..,"scenario":..,"role":"voice"|"screen"}
+      role "screen": a companion screen. It attaches to the session's live connection as a viewer
+      (UI events and screen.state only), or opens the session itself if none is live.
   {"type":"tool_call","call_id":..,"name":..,"args":{..}|"..","turn":n}
   {"type":"spans","spans":[{"name":..,"t_ms":..,"turn":n,"attrs":{..}}, ..]}
   {"type":"transcript","role":"user"|"assistant","text":..,"t_ms":..,"item_id":..,"languages":[..]}
@@ -13,6 +15,7 @@ Engine -> browser
   {"type":"ready","session_id":..,"scenario":..}
   {"type":"tool_result","call_id":..,"output":"<one JSON line>"}
   {"type":"ui","event":"tool.started"|"tool.finished"|"ledger.updated"|"session.lang"|..,..}
+  {"type":"ui","event":"screen.state","state":{..}}   the whole screen, after every change (debounced)
   {"type":"inject","urgent":bool,"text":..}    short engine message for the voice session
   {"type":"error","detail":..}
 """
@@ -20,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -44,6 +47,7 @@ class Hello(BaseModel):
     run_id: str | None = Field(default=None, max_length=64)
     dummy_delay_s: float | None = Field(default=None, ge=0, le=10)
     scenario: str | None = Field(default=None, max_length=64)
+    role: str = Field(default="voice", pattern="^(voice|screen)$")
 
 
 class ToolCall(BaseModel):
@@ -108,6 +112,9 @@ class Connection:
         self.hello = hello
         self._send_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
+        self.viewers: set[WebSocket] = set()
+        self.transcript: deque[dict[str, Any]] = deque(maxlen=60)
+        self._state_pending = False
         delay = hello.dummy_delay_s if hello.dummy_delay_s is not None else settings.dummy_delay_s
         scenario = hello.scenario if hello.scenario in SCENARIOS else settings.fake_scenario
         self.bench = make_bench(settings, scenario, delay)
@@ -130,10 +137,88 @@ class Connection:
 
     async def send(self, msg: dict[str, Any]) -> None:
         async with self._send_lock:
-            try:
-                await self.ws.send_json(msg)
-            except (RuntimeError, WebSocketDisconnect):  # closed: late UI events have nowhere to go
-                log.debug("dropped %s after close", msg.get("type"))
+            if self.connected:
+                try:
+                    await self.ws.send_json(msg)
+                except (RuntimeError, WebSocketDisconnect):  # closed: late UI events have nowhere to go
+                    log.debug("dropped %s after close", msg.get("type"))
+            if msg.get("type") == "ui":
+                for v in list(self.viewers):
+                    try:
+                        await v.send_json(msg)
+                    except (RuntimeError, WebSocketDisconnect):
+                        self.viewers.discard(v)
+        if msg.get("type") == "ui" and msg.get("event") != "screen.state":
+            self.state_soon()
+
+    # --- the companion screen ------------------------------------------------------------------
+
+    def screen_state(self) -> dict[str, Any]:
+        st = self.repair.screen_state()
+        st["transcript"] = list(self.transcript)
+        st["scenario"] = self.bench.scenario
+        st["camera"] = isinstance(self.bench, VisionBench)
+        return st
+
+    def state_soon(self, delay_s: float = 0.05) -> None:
+        """One screen.state push for a burst of events."""
+        if self._state_pending:
+            return
+        self._state_pending = True
+
+        async def push() -> None:
+            await asyncio.sleep(delay_s)
+            self._state_pending = False
+            await self.send({"type": "ui", "event": "screen.state", "state": self.screen_state()})
+
+        try:
+            self._spawn(push())
+        except RuntimeError:
+            self._state_pending = False
+
+    def _line(self, role: str, text: str, **extra: Any) -> None:
+        item = {"role": role, "text": text[:400], "t_ms": now_ms(), **extra}
+        self.transcript.append(item)
+
+    async def handle(self, msg: Any) -> dict[str, Any] | None:
+        """One message from the browser (or the dev driver, which sends the same ones)."""
+        settings, telemetry, hello = self.settings, self.telemetry, self.hello
+        kind = msg.get("type") if isinstance(msg, dict) else None
+        try:
+            if kind == "tool_call":
+                self.spawn_tool(ToolCall.model_validate(msg))
+            elif kind == "spans":
+                for span in SpanBatch.model_validate(msg).spans:
+                    telemetry.record(hello.session_id, span, "browser", hello.run_id)
+            elif kind == "transcript":
+                tr = TranscriptMsg.model_validate(msg)
+                telemetry.record_transcript(hello.session_id, tr, hello.run_id)
+                tag = lang_tag(tr.text)
+                self._line(tr.role, tr.text, lang=tag, phase=tr.phase)
+                await self.send({"type": "ui", "event": "transcript", "role": tr.role, "text": tr.text[:400], "lang": tag})
+                if tr.role == "user":
+                    await self.repair.on_user_transcript(tr.text, tag)
+            elif kind == "event" and msg.get("name") == "barge_in":
+                self._line("event", "interrupted", what="barge_in")
+                await self.send({"type": "ui", "event": "interruption", "what": "barge_in"})
+                self.repair.on_barge_in()
+            elif kind == "lang" and msg.get("lang") in ("hi", "en"):
+                await self.repair.set_language(msg["lang"])
+            elif kind == "event" and msg.get("name") == "safety_violation":
+                vk, vt = str(msg.get("kind", ""))[:40], str(msg.get("text", ""))[:300]
+                self.span("safety_violation", 0, kind=vk, text=vt)
+                self._line("event", f"power instruction stopped: {vt}", what="guardrail", kind=vk)
+                self.repair.on_safety_violation(vk, vt)
+            elif kind == "dev" and msg.get("scenario") in SCENARIOS and settings.dev_endpoints:
+                await self.set_scenario(msg["scenario"])
+            elif kind == "dev":
+                await self.send({"type": "error", "detail": f"unknown scenario {msg.get('scenario')!r}"})
+            else:
+                await self.send({"type": "error", "detail": f"unknown message type {kind!r}"})
+        except ValidationError as exc:
+            await self.send({"type": "error", "detail": f"invalid {kind} message: {exc.error_count()} error(s)"})
+            return {"error": "invalid", "count": exc.error_count()}
+        return None
 
     async def set_scenario(self, name: str) -> None:
         self.bench.set_scenario(name)
@@ -152,7 +237,7 @@ class Connection:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _run_tool(self, call: ToolCall) -> None:
+    async def _run_tool(self, call: ToolCall) -> str:
         ctx = ToolContext(repair=self.repair)
         args = call.args if isinstance(call.args, str) else one_line(call.args)
         self.span("tool_started", call.turn, name=call.name, call_id=call.call_id, args=args[:300])
@@ -165,6 +250,7 @@ class Connection:
         self.span("tool_finished", call.turn, name=call.name, call_id=call.call_id, ok=ok, output=output)
         await self.send({"type": "tool_result", "call_id": call.call_id, "output": output})
         await self.send({"type": "ui", "event": "tool.finished", "name": call.name, "call_id": call.call_id, "ok": ok})
+        return output
 
     def cancel_all(self) -> None:
         for t in list(self._tasks):
@@ -182,51 +268,49 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         await ws.close(code=1008)
         return
 
+    connections = getattr(ws.app.state, "connections", None)
+    live = connections.get(hello.session_id) if connections is not None else None
+    if hello.role == "screen" and live is not None and live.connected:
+        await view(ws, live)
+        return
     await telemetry.flush()  # a reconnect may follow writes that are still queued
     stored = await asyncio.to_thread(load_stored_repair, telemetry, hello.session_id)
     conn = Connection(ws, settings, telemetry, hello, stored)
-    connections = getattr(ws.app.state, "connections", None)
     if connections is not None:
         connections.add(conn)
     ready: dict[str, Any] = {"type": "ready", "session_id": hello.session_id, "scenario": conn.bench.scenario}
     if stored:
         ready["restored"] = conn.repair.summary()
     await conn.send(ready)
+    conn.state_soon(0.0)
     if stored and conn.repair.state in ("probing", "fix"):
         await conn.repair.note("The engine reconnected; the repair continues. Call next_step before the next instruction.")
     try:
         while True:
-            msg = await ws.receive_json()
-            kind = msg.get("type") if isinstance(msg, dict) else None
-            try:
-                if kind == "tool_call":
-                    conn.spawn_tool(ToolCall.model_validate(msg))
-                elif kind == "spans":
-                    for span in SpanBatch.model_validate(msg).spans:
-                        telemetry.record(hello.session_id, span, "browser", hello.run_id)
-                elif kind == "transcript":
-                    tr = TranscriptMsg.model_validate(msg)
-                    telemetry.record_transcript(hello.session_id, tr, hello.run_id)
-                    if tr.role == "user":
-                        await conn.repair.on_user_transcript(tr.text, lang_tag(tr.text))
-                elif kind == "event" and msg.get("name") == "barge_in":
-                    conn.repair.on_barge_in()
-                elif kind == "lang" and msg.get("lang") in ("hi", "en"):
-                    await conn.repair.set_language(msg["lang"])
-                elif kind == "event" and msg.get("name") == "safety_violation":
-                    vk, vt = str(msg.get("kind", ""))[:40], str(msg.get("text", ""))[:300]
-                    conn.span("safety_violation", 0, kind=vk, text=vt)
-                    conn.repair.on_safety_violation(vk, vt)
-                elif kind == "dev" and msg.get("scenario") in SCENARIOS and settings.dev_endpoints:
-                    await conn.set_scenario(msg["scenario"])
-                elif kind == "dev":
-                    await conn.send({"type": "error", "detail": f"unknown scenario {msg.get('scenario')!r}"})
-                else:
-                    await conn.send({"type": "error", "detail": f"unknown message type {kind!r}"})
-            except ValidationError as exc:
-                await conn.send({"type": "error", "detail": f"invalid {kind} message: {exc.error_count()} error(s)"})
+            await conn.handle(await ws.receive_json())
     except WebSocketDisconnect:
         pass
     finally:
         conn.connected = False
         conn.cancel_all()
+
+
+async def view(ws: WebSocket, conn: Connection) -> None:
+    """A second screen on a live session: it sees UI events and the screen state; it may set the
+    reply language and (dev) the scenario, nothing else."""
+    conn.viewers.add(ws)
+    try:
+        await ws.send_json({"type": "ready", "session_id": conn.hello.session_id, "scenario": conn.bench.scenario, "viewer": True})
+        await ws.send_json({"type": "ui", "event": "screen.state", "state": conn.screen_state()})
+        while True:
+            msg = await ws.receive_json()
+            if isinstance(msg, dict) and (msg.get("type") == "lang" or msg.get("type") == "dev"):
+                await conn.handle(msg)
+            elif isinstance(msg, dict) and msg.get("type") == "spans":
+                continue
+            else:
+                await ws.send_json({"type": "error", "detail": "a screen viewer can only set the language"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        conn.viewers.discard(ws)

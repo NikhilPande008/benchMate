@@ -12,7 +12,8 @@
       // src/realtime/voice.ts picks these up if the request matches what the app would send.
       (function () {
         var q = new URLSearchParams(location.search);
-        if (q.get('autoconnect') === '0') return;
+        try { document.documentElement.dataset.theme = localStorage.getItem('benchmate.theme') || 'auto'; } catch (e) { document.documentElement.dataset.theme = 'auto'; }
+        if (q.get('autoconnect') === '0' || q.get('screen') === '1') return;
         var early = { t: performance.now() };
         early.body = {
           model: q.get('model') || 'mini',

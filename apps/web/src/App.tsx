@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Harness } from './harness';
+import { EngineSocket } from './realtime/engine';
 import { startVoice, type VoiceEvent, type VoiceHandle } from './realtime/voice';
+import { Screen } from './screen/Screen';
+import { apply, EMPTY, type ScreenState, type UiEvent } from './screen/state';
 
 const params = new URLSearchParams(location.search);
 const flag = (name: string, fallback: boolean) => (params.has(name) ? params.get(name) !== '0' : fallback);
 const delayParam = params.get('delay');
 const harnessMode = flag('harness', false);
+const demoMode = flag('demo', false);
+// Screen only: a companion screen on a session (no microphone, no voice), e.g. a second monitor,
+// the replay, or the UI tests. ?screen=1&session=<id>
+const screenOnly = flag('screen', false);
 
 const TURN_MODES: [string, string][] = [
   ['semantic_medium', 'Semantic VAD, medium'],
@@ -26,7 +33,6 @@ const storedKey = (() => {
 })();
 
 type Line = { who: 'you' | 'benchmate' | 'engine' | 'error' | 'status'; text: string };
-type Ranked = [string, number][];
 
 /** One readable line per engine UI event for the log. */
 function describe(ev: Record<string, unknown>): string {
@@ -65,7 +71,32 @@ declare global {
 const harness = harnessMode ? new Harness(() => window.benchmate?.handle ?? null) : null;
 if (harness) window.harness = harness;
 
+/** The companion screen alone, attached to a session over the engine WebSocket. */
+function ScreenOnly() {
+  const sessionId = params.get('session') ?? 'se_screen';
+  const [state, setState] = useState<ScreenState>(EMPTY);
+  const [connected, setConnected] = useState(false);
+  const socket = useRef<EngineSocket | null>(null);
+  useEffect(() => {
+    const sock = new EngineSocket((ev) => setState((s) => apply(s, ev as UiEvent)));
+    socket.current = sock;
+    sock
+      .connect({ session_id: sessionId, role: 'screen', scenario: params.get('scenario') })
+      .then(() => setConnected(true))
+      .catch(() => setConnected(false));
+    return () => {
+      sock.close();
+      setConnected(false);
+    };
+  }, [sessionId]);
+  return <Screen state={state} sessionId={sessionId} demo={demoMode} connected={connected} onLanguage={(l) => socket.current?.setLanguage(l)} />;
+}
+
 export function App() {
+  return screenOnly ? <ScreenOnly /> : <VoiceApp />;
+}
+
+function VoiceApp() {
   const [model, setModel] = useState(params.get('model') ?? 'mini');
   const [status, setStatus] = useState('idle');
   const [lines, setLines] = useState<Line[]>([]);
@@ -77,9 +108,7 @@ export function App() {
   const [audioLocked, setAudioLocked] = useState(false);
   const [scenario, setScenarioState] = useState<string | null>(params.get('scenario'));
   const [scenarios, setScenarios] = useState<string[]>([]);
-  const [top, setTop] = useState<Ranked>([]);
-  const [step, setStep] = useState<string>('');
-  const [sessionLang, setSessionLang] = useState<string | null>(null);
+  const [screen, setScreen] = useState<ScreenState>(EMPTY);
   const handle = useRef<VoiceHandle | null>(null);
   const started = useRef(false);
 
@@ -100,11 +129,9 @@ export function App() {
         case 'ui': {
           const u = ev.event;
           if (u.event === 'watch.sample') break; // too chatty for the log
+          setScreen((s) => apply(s, u as UiEvent));
+          if (u.event === 'screen.state' || u.event === 'transcript') break; // shown on the screen itself
           if (u.event === 'dev.scenario') setScenarioState(String(u.scenario));
-          if (u.event === 'session.lang') setSessionLang(String(u.lang));
-          if ((u.event === 'ledger.updated' || u.event === 'repair.started') && Array.isArray(u.top)) setTop(u.top as Ranked);
-          if (u.event === 'step.proposed') setStep(`${String(u.step)}: ${String(u.measurement ?? '')}${u.power_step ? ` (${String(u.power_step)})` : ''}`);
-          if (u.event === 'fix.proposed') setStep(`fix: ${String(u.fault)} → check ${String(u.check)}`);
           push({ who: 'engine', text: describe(u) });
           break;
         }
@@ -193,115 +220,87 @@ export function App() {
 
   const connected = status.startsWith('connected');
   const readyMs = stages.ready;
-  return (
-    <main>
-      <header>
-        <h1>Benchmate</h1>
-        <span className="status" data-testid="status">
-          {status}
-          {readyMs !== undefined && ` · ready ${Math.round(readyMs)} ms after page load`}
-        </span>
-      </header>
-      {audioLocked && <p className="banner">Click or press any key to turn on the voice.</p>}
-      <section className="controls">
+  const dev = (
+    <div className="devbar" data-testid="dev-controls">
+      <span className="status" data-testid="status">
+        {status}
+        {readyMs !== undefined && ` · ready ${Math.round(readyMs)} ms after page load`}
+      </span>
+      <label>
+        Model{' '}
+        <select value={model} onChange={(e) => setModel(e.target.value)} disabled={connected}>
+          <option value="mini">mini (dev)</option>
+          <option value="flagship">flagship (demo)</option>
+        </select>
+      </label>
+      {connected ? <button onClick={disconnect}>Disconnect</button> : <button onClick={() => void connect()}>Connect</button>}
+      <label>
+        Turn mode{' '}
+        <select value={turnMode} onChange={(e) => changeTurnMode(e.target.value)} disabled={!connected}>
+          {TURN_MODES.map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Talk key{' '}
+        <input
+          className="key"
+          value={pttKey}
+          readOnly
+          onKeyDown={(e) => {
+            e.preventDefault();
+            changePttKey(e.code);
+          }}
+          title="Focus and press the key (or foot pedal) to use for push-to-talk"
+        />
+      </label>
+      {scenarios.length > 0 && (
         <label>
-          Model{' '}
-          <select value={model} onChange={(e) => setModel(e.target.value)} disabled={connected}>
-            <option value="mini">mini (dev)</option>
-            <option value="flagship">flagship (demo)</option>
-          </select>
-        </label>
-        {connected ? (
-          <button onClick={disconnect}>Disconnect</button>
-        ) : (
-          <button onClick={() => void connect()}>Connect</button>
-        )}
-      </section>
-      <section className="controls" data-testid="language">
-        Reply language{' '}
-        {(['hi', 'en'] as const).map((l) => (
-          <button key={l} className={sessionLang === l ? 'on' : ''} disabled={!connected} onClick={() => handle.current?.setLanguage(l)}>
-            {l === 'hi' ? 'Hinglish' : 'English'}
-          </button>
-        ))}
-        <span className="muted">{sessionLang ? '' : ' (set from the first two turns)'}</span>
-      </section>
-      <section className="controls dev">
-        <label>
-          Turn mode{' '}
-          <select value={turnMode} onChange={(e) => changeTurnMode(e.target.value)} disabled={!connected}>
-            {TURN_MODES.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
+          Fake bench{' '}
+          <select value={scenario ?? ''} onChange={(e) => handle.current?.setScenario(e.target.value)} disabled={!connected} data-testid="scenario">
+            {scenarios.map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </select>
         </label>
-        <label>
-          Talk key{' '}
-          <input
-            className="key"
-            value={pttKey}
-            readOnly
-            onKeyDown={(e) => {
-              e.preventDefault();
-              changePttKey(e.code);
-            }}
-            title="Focus and press the key (or foot pedal) to use for push-to-talk"
-          />
-        </label>
-        {turnMode === 'ptt' && <span className={pttDown ? 'ptt on' : 'ptt'}>{pttDown ? 'listening' : `hold ${pttKey} to talk`}</span>}
-        {scenarios.length > 0 && (
-          <label>
-            Fake bench{' '}
-            <select value={scenario ?? ''} onChange={(e) => handle.current?.setScenario(e.target.value)} disabled={!connected} data-testid="scenario">
-              {scenarios.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-      </section>
-      {top.length > 0 && (
-        <section className="ledger" data-testid="ledger">
-          <h2>ledger</h2>
-          <ol>
-            {top.map(([fault, p]) => (
-              <li key={fault}>
-                {fault} <span className="p">{p.toFixed(2)}</span>
-              </li>
-            ))}
-          </ol>
-          {step && <p className="step">{step}</p>}
-        </section>
       )}
-      <section className="latency">
-        <h2>speech end → first audio</h2>
-        <ol>
-          {latencies.map((l) => (
-            <li key={l.turn} className={l.ms > 1200 ? 'slow' : l.ms > 800 ? 'warn' : ''}>
-              turn {l.turn}: {Math.round(l.ms)} ms
-            </li>
-          ))}
-        </ol>
-        {Object.keys(stages).length > 0 && (
-          <p className="stages">
-            {Object.entries(stages)
-              .filter(([name]) => name !== 'page_load')
-              .map(([name, ms]) => `${name} ${Math.round(ms)}`)
-              .join(' · ')}
-          </p>
-        )}
-      </section>
-      <section className="log">
+      <details className="log">
+        <summary>Engine log ({lines.length})</summary>
         {lines.map((l, i) => (
           <p key={i} className={l.who}>
             <b>{l.who}</b> {l.text}
           </p>
         ))}
-      </section>
+      </details>
+      {Object.keys(stages).length > 0 && (
+        <p className="stages">
+          {Object.entries(stages)
+            .filter(([name]) => name !== 'page_load')
+            .map(([name, ms]) => `${name} ${Math.round(ms)}`)
+            .join(' · ')}
+        </p>
+      )}
+    </div>
+  );
+  const ptt = turnMode === 'ptt' && connected ? <span className={pttDown ? 'ptt on' : 'ptt'}>{pttDown ? 'LISTENING' : `hold ${pttKey} to talk`}</span> : null;
+  return (
+    <main>
+      {audioLocked && <p className="banner warn">Click or press any key to turn on the voice.</p>}
+      <Screen
+        state={screen}
+        sessionId={handle.current?.sessionId ?? ''}
+        demo={demoMode}
+        connected={connected}
+        onLanguage={(l) => handle.current?.setLanguage(l)}
+        latencies={latencies}
+        devControls={dev}
+        pttHint={ptt}
+      />
     </main>
   );
 }

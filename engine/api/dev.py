@@ -5,12 +5,17 @@ GET  /dev/sessions/{id}               live repair summary + recent engine events
 POST /dev/sessions/{id}/scenario      {"scenario": name}: switch the fake bench of a live connection
 POST /dev/sessions/{id}/fix           the technician replaced the part: the fake board reads healthy
 GET  /dev/cost?run=<run id or prefix> API cost so far, from recorded usage (the harness budget stop)
+POST /dev/sessions/{id}/drive         one browser message (tool_call, transcript, event, lang) as if the
+                                      page had sent it; a tool call returns its output (UI tests, replay)
+POST /dev/sessions/{id}/vision        fault injection on the fake camera scene (hand, glare, a bumped
+                                      camera, a blank meter, the knob on another mode, the vision API down)
 
 Not for the voice model: none of this is a tool, and the browser only uses it in dev controls.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -98,3 +103,59 @@ async def cost(run: str, request: Request) -> dict[str, Any]:
     await telemetry.flush()
     c = await asyncio.to_thread(run_cost, telemetry.engine, run, settings.transcription_model)
     return c.line()
+
+
+@router.post("/sessions/{session_id}/drive")
+async def drive(session_id: str, request: Request) -> dict[str, Any]:
+    _enabled(request)
+    conn = _connection(request, session_id)
+    msg = await request.json()
+    if not isinstance(msg, dict):
+        raise HTTPException(400, "a JSON object, like the browser's messages")
+    if msg.get("type") == "tool_call":
+        from engine.api.ws import ToolCall
+
+        msg.setdefault("call_id", f"dev_{len(conn.repair.events)}")
+        output = await conn._run_tool(ToolCall.model_validate(msg))
+        return {"output": json.loads(output)}
+    err = await conn.handle(msg)
+    return {"ok": err is None, **(err or {})}
+
+
+class VisionFaults(BaseModel):
+    hand: bool | None = None
+    glare: bool | None = None
+    offset: list[int] | None = None
+    knob: str | None = None
+    meter_on: bool | None = None
+    api_down: bool | None = None
+    api_slow: bool | None = None
+    camera_fail: bool | None = None
+
+
+@router.post("/sessions/{session_id}/vision")
+async def vision_faults(session_id: str, body: VisionFaults, request: Request) -> dict[str, Any]:
+    _enabled(request)
+    from dataclasses import replace
+
+    from mcp_evidence.vision.bench import VisionBench
+
+    conn = _connection(request, session_id)
+    vb = conn.bench
+    if not isinstance(vb, VisionBench):
+        raise HTTPException(409, "no camera in this session (BENCHMATE_EVIDENCE=fake)")
+    upd = {k: v for k, v in body.model_dump().items() if v is not None and k in ("hand", "glare", "knob", "meter_on")}
+    if body.offset is not None:
+        upd["offset"] = tuple(body.offset[:2])
+    if body.knob == "":
+        upd["knob"] = None
+    vb.state = replace(vb.state, **upd)
+    if vb.oracle is not None:
+        if body.api_down is not None:
+            vb.oracle.down = body.api_down
+        if body.api_slow is not None:
+            vb.oracle.slow = body.api_slow
+    if body.camera_fail is not None and vb.camera is not None:
+        vb.camera.fail(body.camera_fail)
+    return {"state": {k: getattr(vb.state, k) for k in ("hand", "glare", "offset", "knob", "meter_on")},
+            "api_down": vb.oracle.down if vb.oracle else None, "level": vb.health.level}

@@ -146,7 +146,8 @@ def test_hello_selects_the_scenario_and_dev_message_switches_it(client):
     with client.websocket_connect("/ws") as ws:
         assert _hello(ws, scenario="not_charging")["scenario"] == "not_charging"
         ws.send_json({"type": "dev", "scenario": "glare_low_confidence"})
-        assert _until(ws, lambda m: m["type"] in ("ui", "error"))[-1] == {"type": "ui", "event": "dev.scenario", "scenario": "glare_low_confidence"}
+        got = _until(ws, lambda m: m["type"] == "error" or (m["type"] == "ui" and m.get("event") == "dev.scenario"))[-1]
+        assert got == {"type": "ui", "event": "dev.scenario", "scenario": "glare_low_confidence"}
         ws.send_json({"type": "dev", "scenario": "no_such_thing"})
         assert _until(ws, lambda m: m["type"] == "error")[-1]["detail"].startswith("unknown scenario")
         _tool(ws, "d1", "start_repair", {"model": "demo", "symptom": "dead", "battery": "removed"})

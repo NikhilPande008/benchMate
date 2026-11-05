@@ -19,7 +19,7 @@ export type TranscriptMsg = {
   languages?: string[];
 };
 
-type Hello = { session_id: string; run_id?: string | null; dummy_delay_s?: number | null; scenario?: string | null };
+type Hello = { session_id: string; run_id?: string | null; dummy_delay_s?: number | null; scenario?: string | null; role?: 'voice' | 'screen' };
 
 export class EngineSocket {
   private ws: WebSocket | null = null;

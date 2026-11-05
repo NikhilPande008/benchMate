@@ -627,3 +627,72 @@ All synthetic or fixture-based: no API calls, no hardware.
 - New tests: `test_vision.py` (51), `test_vision_bench.py` (31), `eval/display_set/test_vision_eval.py`
   (5); `test_synth.py` +2.
 - Test count: **2266 passed, 1 skipped in 24.5 s**; `npm test` 58; typecheck and build pass.
+
+## 2026-11-05 · Phase 3 part C: companion screen v1 (checkpoint C)
+
+Built to PRODUCT.md §10 and ARCHITECTURE.md §8, driven by engine WebSocket events, on the fake
+bench and fake cameras. No audio, no API.
+
+- **Engine:**
+  - `RepairSession.screen_state()`: one snapshot of everything the screen shows:
+    - faults ranked, each with the readings that moved it (from the ledger history);
+    - the next step, with its point's board side and coordinates;
+    - the live approval with its settings and validity, and the gate's last answer;
+    - the latest supply and meter readings, and the boot trace (live while watching);
+    - the evidence log with frame links, the vision level, any read-back.
+  - The connection adds the transcript and pushes `screen.state` after every burst of events
+    (debounced 50 ms), so a reload or a second screen shows the whole picture.
+  - New UI events: `transcript` (with language tag) and `interruption`. A guardrail trip shows
+    as "power instruction stopped".
+  - `Connection.handle()` now holds the WebSocket message handling.
+  - A screen (`hello` with `role: "screen"`) attaches to a live session as a viewer (UI events
+    and state; it may set the language). With no live session, it opens one.
+  - `engine/api/screen.py` (new):
+    - camera frames (overhead in vision mode, microscope always);
+    - the reference board;
+    - the next point on the reference and on the live microscope frame (ORB alignment);
+    - evidence frames, served only from paths the engine wrote;
+    - calibration GET and POST (store under `data/calibration/`, reference frame reset);
+    - preview (warped crop plus Reader B's reading).
+  - Dev routes: `POST /dev/sessions/{id}/drive` (any browser message; a tool call returns its
+    output) and `POST /dev/sessions/{id}/vision` (hand, glare, bumped camera, blank meter, knob,
+    vision API down or slow, camera fail).
+- `mcp_evidence/vision/board.py` (new): a synthetic reference board per pack side (test pads at
+  the pack's points) and a fake microscope (zoomed, rotated window with the probe tip). Alignment
+  is ORB + RANSAC; the point lands within about 2 px, in about 60 ms.
+- **Page** (`apps/web/src/screen/`, new):
+  - `state.ts` is the reducer: `screen.state` replaces; watch samples, transcript lines,
+    interruptions, power endings, language, vision level and safety stop patch.
+  - `Screen.tsx` holds the five zones:
+    - board view: live microscope beside the reference, next point marked on both, label, mode,
+      probe placement;
+    - supply and meter: 3 rem values, confidence, source word and icon, band status, boot-current
+      graph with the limit line and the pattern;
+    - fault ledger: ranked bars and the readings that moved each;
+    - evidence log: source word and icon, confidence, thumbnail, one click opens the frame;
+    - conversation: language tags and interruption markers.
+  - Full-width banners: power approved (the gate's exact sentence, the camera's values, a live
+    countdown); power pending (the values the camera must confirm, and the block reason); safety
+    stop; camera limited or unavailable; confirm read-back.
+  - Header: reply-language toggle, theme auto/light/dark.
+  - Dev controls, Calibrate and the latency dashboard hide in `?demo=1`.
+  - `Calibration.tsx`: drag four corners per display and per digit row on the live overhead
+    frame. The warped crop and Reader B's reading update while dragging; Save.
+  - `App.tsx`: `?screen=1&session=…` opens a screen only, with no microphone and no voice;
+    otherwise the voice page drives the same screen.
+  - `styles.css` rewritten: 18 px base, light and dark themes, status colours always next to a
+    word.
+- Looked at it in the built-in browser at 1680×1050 (dark, light, demo mode, calibration drag).
+  Markers were too small to read from a metre, so they now scale with the image.
+- Tests:
+  - `apps/web/ui_tests/test_screen_ui.py` (new, 12, Playwright + headless Chromium). It runs a
+    real engine on a free port with fake cameras, no key, no secret pool, and the OpenAI URL on a
+    closed port. It covers: the zones, a repair filling the screen, the power banner countdown and
+    its end on barge-in, the pending-power banner, the boot graph, transcript tags and
+    interruptions, degraded banners, the language toggle, calibration drag-preview-save, demo
+    mode, themes and ≥ 40 px values with words, read-back and safety-stop banners. The web build
+    is rebuilt first if stale.
+  - `engine/tests/test_screen_api.py` (new, 7).
+  - `src/screen/state.test.ts` (8).
+- Test count: **2285 passed, 1 skipped in 35.5 s** (UI tests ~9 s); `npm test` 66; typecheck and
+  build pass.

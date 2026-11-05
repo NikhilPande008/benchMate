@@ -11,6 +11,8 @@ export default defineConfig({
     proxy: {
       '/realtime': engine,
       '/health': engine,
+      '/screen': engine,
+      '/dev': engine,
       '/ws': { target: engine.replace(/^http/, 'ws'), ws: true },
     },
   },

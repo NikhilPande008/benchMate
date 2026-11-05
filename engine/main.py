@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from engine.api import dev, realtime, ws
+from engine.api import dev, realtime, screen, ws
 from engine.config import Settings
 from engine.telemetry import TelemetryStore
 
@@ -42,6 +42,7 @@ def create_app(
     app.include_router(realtime.router)
     app.include_router(ws.router)
     app.include_router(dev.router)
+    app.include_router(screen.router)
 
     @app.get("/health")
     async def health() -> dict[str, object]:
