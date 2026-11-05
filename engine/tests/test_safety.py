@@ -136,31 +136,31 @@ def test_result_line_is_short():
     assert len(line) < 300 and "\n" not in line
 
 
-# --- approvals: single use, expiry, barge-in -------------------------------------------------
+# --- approvals (lifetime rules in engine/tests/test_approval.py) ----------------------------
 
 
 def test_approval_is_single_use():
     a = Approvals()
-    a.grant("connect_boot_cable", NOW)
+    a.grant("connect_boot_cable", (4.0, 1.0), NOW)
     assert a.consume("connect_boot_cable", NOW)
     assert not a.consume("connect_boot_cable", NOW)
 
 
-def test_approval_is_for_one_step_and_expires():
-    a = Approvals(ttl_s=60)
-    a.grant("connect_boot_cable", NOW)
-    assert not a.valid("press_power_key", NOW)
-    assert a.valid("connect_boot_cable", NOW + timedelta(seconds=59))
-    assert not a.valid("connect_boot_cable", NOW + timedelta(seconds=60))
-
-
-def test_barge_in_cancels_a_pending_power_step():
+def test_approval_is_for_one_step_and_lasts_20_s():
     a = Approvals()
-    a.grant("connect_boot_cable", NOW)
-    cancelled = a.cancel()
-    assert cancelled and cancelled.step == "connect_boot_cable"
+    a.grant("connect_boot_cable", (4.0, 1.0), NOW)
+    assert not a.valid("press_power_key", NOW)
+    assert a.valid("connect_boot_cable", NOW + timedelta(seconds=19.9))
+    assert not a.valid("connect_boot_cable", NOW + timedelta(seconds=20))
+
+
+def test_barge_in_ends_a_pending_power_step():
+    a = Approvals()
+    a.grant("connect_boot_cable", (4.0, 1.0), NOW)
+    ended = a.end("barge_in")
+    assert ended and ended.step == "connect_boot_cable"
     assert not a.consume("connect_boot_cable", NOW)  # must be requested and checked again
-    assert a.cancel() is None
+    assert a.end("barge_in") is None
 
 
 # --- scope: what the user says ---------------------------------------------------------------

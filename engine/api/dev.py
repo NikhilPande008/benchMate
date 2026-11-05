@@ -4,17 +4,20 @@ GET  /dev/scenarios                   fake bench scenarios and the default
 GET  /dev/sessions/{id}               live repair summary + recent engine events (the e2e driver polls this)
 POST /dev/sessions/{id}/scenario      {"scenario": name}: switch the fake bench of a live connection
 POST /dev/sessions/{id}/fix           the technician replaced the part: the fake board reads healthy
+GET  /dev/cost?run=<run id or prefix> API cost so far, from recorded usage (the harness budget stop)
 
 Not for the voice model: none of this is a tool, and the browser only uses it in dev controls.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from engine.config import Settings
+from engine.telemetry.cost import run_cost
 from mcp_evidence.fake_bench import SCENARIOS
 
 router = APIRouter(prefix="/dev")
@@ -84,3 +87,14 @@ async def apply_fix(session_id: str, request: Request) -> dict[str, Any]:
     conn = _connection(request, session_id)
     conn.bench.apply_fix()
     return {"session_id": session_id, "fixed": True}
+
+
+@router.get("/cost")
+async def cost(run: str, request: Request) -> dict[str, Any]:
+    settings = _enabled(request)
+    if len(run) < 3:
+        raise HTTPException(400, "run must be a run id or a prefix of at least 3 characters")
+    telemetry = request.app.state.telemetry
+    await telemetry.flush()
+    c = await asyncio.to_thread(run_cost, telemetry.engine, run, settings.transcription_model)
+    return c.line()

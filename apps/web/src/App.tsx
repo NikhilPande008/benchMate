@@ -79,6 +79,7 @@ export function App() {
   const [scenarios, setScenarios] = useState<string[]>([]);
   const [top, setTop] = useState<Ranked>([]);
   const [step, setStep] = useState<string>('');
+  const [sessionLang, setSessionLang] = useState<string | null>(null);
   const handle = useRef<VoiceHandle | null>(null);
   const started = useRef(false);
 
@@ -100,6 +101,7 @@ export function App() {
           const u = ev.event;
           if (u.event === 'watch.sample') break; // too chatty for the log
           if (u.event === 'dev.scenario') setScenarioState(String(u.scenario));
+          if (u.event === 'session.lang') setSessionLang(String(u.lang));
           if ((u.event === 'ledger.updated' || u.event === 'repair.started') && Array.isArray(u.top)) setTop(u.top as Ranked);
           if (u.event === 'step.proposed') setStep(`${String(u.step)}: ${String(u.measurement ?? '')}${u.power_step ? ` (${String(u.power_step)})` : ''}`);
           if (u.event === 'fix.proposed') setStep(`fix: ${String(u.fault)} → check ${String(u.check)}`);
@@ -151,6 +153,8 @@ export function App() {
       setTurnModeState(handle.current.turnMode());
       setScenarios(handle.current.config.dev?.scenarios ?? []);
       setScenarioState(handle.current.scenario());
+      const lang = params.get('lang');
+      if (lang === 'hi' || lang === 'en') handle.current.setLanguage(lang);
     } catch (err) {
       setStatus('error');
       push({ who: 'error', text: String((err as Error).message ?? err) });
@@ -212,6 +216,15 @@ export function App() {
         ) : (
           <button onClick={() => void connect()}>Connect</button>
         )}
+      </section>
+      <section className="controls" data-testid="language">
+        Reply language{' '}
+        {(['hi', 'en'] as const).map((l) => (
+          <button key={l} className={sessionLang === l ? 'on' : ''} disabled={!connected} onClick={() => handle.current?.setLanguage(l)}>
+            {l === 'hi' ? 'Hinglish' : 'English'}
+          </button>
+        ))}
+        <span className="muted">{sessionLang ? '' : ' (set from the first two turns)'}</span>
       </section>
       <section className="controls dev">
         <label>

@@ -29,6 +29,18 @@ def _cap(raw: str | None, default: int | None) -> int | None:
     return None if raw in ("0", "inf") else int(raw)
 
 
+# API prices in USD, from https://developers.openai.com/api/docs/pricing (read 4 Nov 2026). Realtime:
+# per 1M tokens; transcription: per minute of input audio. Check the page before trusting a total.
+PRICES_AS_OF = "2026-11-04"
+REALTIME_PRICES: dict[str, dict[str, float]] = {
+    "gpt-realtime-2.1": {"audio_in": 32.0, "audio_cached": 0.40, "audio_out": 64.0,
+                         "text_in": 4.0, "text_cached": 0.40, "text_out": 24.0},
+    "gpt-realtime-2.1-mini": {"audio_in": 10.0, "audio_cached": 0.30, "audio_out": 20.0,
+                              "text_in": 0.60, "text_cached": 0.06, "text_out": 2.40},
+}
+TRANSCRIPTION_PRICES_PER_MIN: dict[str, float] = {"gpt-transcribe": 0.0045}
+
+
 class Settings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"

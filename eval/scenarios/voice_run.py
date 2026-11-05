@@ -9,6 +9,9 @@ fake bench (the safety gate needs a camera-read supply).
     uv run python eval/scenarios/voice_run.py --start-engine                 # the five scenarios
     uv run python eval/scenarios/voice_run.py --start-engine --scenarios no_current --headed
     uv run python eval/scenarios/voice_run.py --analyse 20261104-1830        # re-print a stored batch
+    uv run python eval/scenarios/voice_run.py --scenarios glare_low_confidence --estimate   # no API calls
+
+Every turn's cost is logged from recorded usage; the batch stops at --budget dollars (default 2).
 
 Clips: macOS `say` (Rishi: Indian English, also for Latin-script Hinglish), cached in
 eval/scenarios/audio/ (git-ignored). Results: eval/scenarios/runs/<stamp>.json (git-ignored).
@@ -40,6 +43,8 @@ sys.path.insert(0, str(REPO / "eval" / "latency_script"))
 from engine.config import Settings  # noqa: E402
 from engine.safety import APPROVED  # noqa: E402
 from engine.telemetry import lang_tag, load_spans, load_transcripts, make_engine  # noqa: E402
+from engine.telemetry.cost import run_cost  # noqa: E402
+from budget import DEFAULT_BUDGET_USD, BudgetExceeded, BudgetGuard, estimate  # noqa: E402
 from make_clips import RATE, read_wav, speech_profile  # noqa: E402
 from mcp_evidence.fake_bench import SCENARIOS, FakeBench  # noqa: E402
 from mcp_evidence.spoken.parser import parse  # noqa: E402
@@ -205,10 +210,10 @@ def http_json(url: str, data: dict | None = None) -> dict:
         return json.load(r)
 
 
-def run_session(page, base: str, scenario: str, lang: str, log) -> dict:
+def run_session(page, base: str, scenario: str, lang: str, log, guard: BudgetGuard | None = None) -> dict:
     sid = page.evaluate("window.benchmate.handle.sessionId")
     tech = Technician(scenario, lang, spoken=scenario not in CAMERA_SCENARIOS)
-    cursor, turns = 0, []
+    cursor, turns, stopped = 0, [], None
     for _ in range(MAX_TURNS):
         state = http_json(f"{base}/dev/sessions/{sid}?since={cursor}")
         tech.events += state["events"]
@@ -233,10 +238,17 @@ def run_session(page, base: str, scenario: str, lang: str, log) -> dict:
         log(f"    you: {line}")
         for t in said:
             log(f"    benchmate: {t}")
+        if guard:
+            try:
+                turns[-1]["usd"] = round(guard.check(spec["id"]), 4)
+            except BudgetExceeded as exc:
+                log(f"    STOPPED: {exc}")
+                stopped = str(exc)
+                break
     final = http_json(f"{base}/dev/sessions/{sid}?since={cursor}")
     tech.events += final["events"]
     return {"scenario": scenario, "lang": lang, "session_id": sid, "spoken": tech.spoken, "turns": turns,
-            "events": tech.events, "final": {k: v for k, v in final.items() if k != "events"}}
+            "events": tech.events, "final": {k: v for k, v in final.items() if k != "events"}, "budget_stop": stopped}
 
 
 def page_url(base: str, scenario: str, run_id: str, prompt: str, model: str) -> str:
@@ -245,20 +257,23 @@ def page_url(base: str, scenario: str, run_id: str, prompt: str, model: str) -> 
     return f"{base}/?" + "&".join(f"{k}={v}" for k, v in q.items())
 
 
-def run_all(base: str, runs: list[tuple[str, str]], run_id: str, prompt: str, model: str, headed: bool) -> list[dict]:
+def run_all(base: str, runs: list[tuple[str, str]], run_id: str, prompt: str, model: str, headed: bool,
+            guard: BudgetGuard | None = None) -> list[dict]:
     from playwright.sync_api import sync_playwright
 
-    out = []
+    out: list[dict] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=not headed, args=BROWSER_ARGS)
         for scenario, lang in runs:
+            if out and out[-1].get("budget_stop"):
+                break
             print(f"\n=== {scenario} ({lang})", flush=True)
             ctx = browser.new_context(permissions=["microphone"])
             page = ctx.new_page()
             page.route("**/e2e-audio/**", lambda route: route.fulfill(path=str(AUDIO / route.request.url.split("/e2e-audio/")[1])))
             page.goto(page_url(base, scenario, run_id, prompt, model))
             page.wait_for_function("window.benchmate && window.benchmate.status.startsWith('connected')", timeout=30_000)
-            out.append(run_session(page, base, scenario, lang, lambda m: print(m, flush=True)))
+            out.append(run_session(page, base, scenario, lang, lambda m: print(m, flush=True), guard))
             page.evaluate("window.benchmate.stop()")
             page.wait_for_timeout(1000)
             ctx.close()
@@ -397,6 +412,8 @@ def main() -> None:
     ap.add_argument("--prompt", default="v3_local")
     ap.add_argument("--model", default="mini")
     ap.add_argument("--analyse", metavar="STAMP")
+    ap.add_argument("--budget", type=float, default=DEFAULT_BUDGET_USD, help="stop the batch once it has cost this many USD")
+    ap.add_argument("--estimate", action="store_true", help="print the estimated cost and exit (no API calls)")
     args = ap.parse_args()
 
     settings = Settings.from_env()
@@ -407,6 +424,19 @@ def main() -> None:
         return
 
     runs = [(s, args.lang or l) for s, l in DEFAULT_RUNS if not args.scenarios or s in args.scenarios]
+    if args.estimate:
+        model_id = settings.resolve_model(args.model) or args.model
+        db = make_engine(settings.db_path)
+        _, per_turn, seen = estimate(db, model_id, 1, ["e2e-"], args.prompt)
+        total = 0.0
+        for scenario, lang in runs:
+            typical, worst = (12, MAX_TURNS)
+            total += per_turn * typical
+            print(f"{scenario} ({lang}): ~{typical} turns x ${per_turn:.4f} = ${per_turn * typical:.2f} "
+                  f"(up to {worst} turns: ${per_turn * worst:.2f})")
+        basis = f"{seen} earlier turns" if seen else "no history: default"
+        print(f"total: ~${total:.2f}, at most ${per_turn * MAX_TURNS * len(runs):.2f}  ({model_id}, {basis}; budget stop at ${args.budget:.2f})")
+        return
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     run_id = f"e2e-{stamp}"
     proc = None
@@ -423,7 +453,7 @@ def main() -> None:
     elif not engine_up(args.base):
         raise SystemExit(f"engine not reachable (or no OPENAI_API_KEY) at {args.base}")
     try:
-        sessions = run_all(args.base, runs, run_id, args.prompt, args.model, args.headed)
+        sessions = run_all(args.base, runs, run_id, args.prompt, args.model, args.headed, BudgetGuard(args.base, run_id, args.budget))
     finally:
         if proc:
             time.sleep(1.0)  # let the telemetry queue drain
@@ -433,7 +463,9 @@ def main() -> None:
     rows = [analyse(s, settings.db_path, run_id) for s in sessions]
     (RUNS / f"{stamp}-analysis.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     print_table(rows)
-    print(f"\nstored: eval/scenarios/runs/{stamp}.json")
+    cost = run_cost(make_engine(settings.db_path), run_id)
+    print(f"\nbatch cost: ${cost.usd:.3f} ({cost.lines} turns, ${cost.usd_per_line or 0:.4f} per turn)")
+    print(f"stored: eval/scenarios/runs/{stamp}.json")
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ def test_short_preamble_is_one_to_three_words(name):
         assert 1 <= len(phrase.split()) <= 3, phrase
 
 
-@pytest.mark.parametrize("name", ["v1_local", "v2_local", "v3_local"])
+@pytest.mark.parametrize("name", ["v1_local", "v2_local", "v3_local", "v4_local"])
 def test_local_preamble_prompt_forbids_speaking_before_tool_results(name):
     preambles = _sections(load_prompt(PROMPTS[name]).text)["Preambles"]
     assert "Never speak before a tool result" in preambles
@@ -89,7 +89,7 @@ def _v3(name: str) -> dict[str, str]:
     return _sections(load_prompt(PROMPTS[name]).text)
 
 
-@pytest.mark.parametrize("name", V3)
+@pytest.mark.parametrize("name", V3 + ["v4_local"])
 def test_v3_tools_section_covers_all_eight_tools(name):
     tools = _v3(name)["Tools"]
     for tool in ALLOWED_TOOL_NAMES:
@@ -106,18 +106,18 @@ def test_v3_language_rules(name):
     assert "Point three five volt, yeh normal hai." in examples and len(examples) == 3
 
 
-@pytest.mark.parametrize("name", V3)
+@pytest.mark.parametrize("name", V3 + ["v4_local"])
 def test_v3_values_and_power_steps_only_from_tool_results(name):
     text = load_prompt(PROMPTS[name]).text
     assert "Never state a value, class, fault or probability that is not in a tool result" in text
     tools, safety = _v3(name)["Tools"], _v3(name)["Safety"]
-    assert 'say the "say" sentence in the reply language exactly, word for word' in tools
+    assert re.search(r'say the "say" sentence (in the reply language|of the session language[^.]*?) exactly, word for word', tools)
     assert 'except with the exact "say" sentence of the safety gate' in safety
     assert 'engine has already asked the safety gate' in tools  # next_step "power" carries the gate's answer
     assert "never diagnose, rank faults or choose a step yourself" in _v3(name)["Role and Objective"]
 
 
-@pytest.mark.parametrize("name", V3)
+@pytest.mark.parametrize("name", V3 + ["v4_local"])
 def test_v3_follows_engine_messages(name):
     engine = _v3(name)["Engine Messages"]
     assert '"[engine]"' in engine and "SAFETY STOP" in engine
@@ -129,3 +129,37 @@ def test_v3_variants_differ_only_in_preambles():
     assert a.keys() == b.keys()
     assert {k for k in a if a[k] != b[k]} == {"Preambles"}
     assert "v3_local" in LOCAL_PREAMBLE_PROMPTS and "v3" not in LOCAL_PREAMBLE_PROMPTS
+
+
+# --- v4_local: session language from the engine ---------------------------------------------------
+
+
+def test_v4_replies_follow_the_session_language_from_the_engine():
+    from engine.session.language import NOTE
+
+    language = _v3("v4_local")["Language"]
+    assert '"[engine] Session language: Hinglish"' in language and '"[engine] Session language: English"' in language
+    assert "even when one turn is in the other language" in language
+    assert "latest turn only" not in language  # v3's per-turn rule is gone
+    for note in NOTE.values():  # the notes the engine sends start the way the prompt says
+        assert note.startswith(("Session language: Hinglish", "Session language: English"))
+    assert '"[engine] Session language: ..."' in _v3("v4_local")["Engine Messages"]
+
+
+def test_v4_examples_are_mostly_hinglish():
+    sections = _v3("v4_local")
+    verbosity = sections["Verbosity"]
+    hinglish, english = verbosity.split("- Hinglish examples:")[1].split("- English examples:")
+    count = lambda block: len(re.findall(r'^\s+- "(.+)"$', block, flags=re.M))  # noqa: E731
+    assert count(hinglish) > count(english) >= 1
+    readings = re.findall(r'^\s+- "(.+)"$', sections["Language"].split("Hinglish reading examples:")[1], flags=re.M)
+    assert len(readings) >= 4 and "Point three five volt, yeh normal hai." in readings
+    assert all(len(e.split()) <= 15 for e in re.findall(r'^\s+- "(.+)"$', verbosity, flags=re.M))
+
+
+def test_v4_keeps_v3_local_rules_and_v3_stays_available():
+    v3, v4 = _v3("v3_local"), _v3("v4_local")
+    assert v3.keys() == v4.keys()
+    for same in ("Role and Objective", "Personality and Tone", "Reasoning", "Preambles", "Safety"):
+        assert v3[same] == v4[same], same
+    assert "v3_local" in PROMPTS and "v4_local" in LOCAL_PREAMBLE_PROMPTS

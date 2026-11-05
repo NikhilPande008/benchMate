@@ -6,7 +6,9 @@ Browser -> engine
   {"type":"spans","spans":[{"name":..,"t_ms":..,"turn":n,"attrs":{..}}, ..]}
   {"type":"transcript","role":"user"|"assistant","text":..,"t_ms":..,"item_id":..,"languages":[..]}
   {"type":"event","name":"barge_in"}          user spoke over the agent: cancels a pending power approval
+  {"type":"event","name":"safety_violation","kind":..,"text":..}   guardrail stopped an unapproved power instruction
   {"type":"dev","scenario":..}                 fake bench scenario (dev controls)
+  {"type":"lang","lang":"hi"|"en"}             the screen's reply-language toggle
 Engine -> browser
   {"type":"ready","session_id":..,"scenario":..}
   {"type":"tool_result","call_id":..,"output":"<one JSON line>"}
@@ -189,6 +191,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                         await conn.repair.on_user_transcript(tr.text, lang_tag(tr.text))
                 elif kind == "event" and msg.get("name") == "barge_in":
                     conn.repair.on_barge_in()
+                elif kind == "lang" and msg.get("lang") in ("hi", "en"):
+                    await conn.repair.set_language(msg["lang"])
+                elif kind == "event" and msg.get("name") == "safety_violation":
+                    vk, vt = str(msg.get("kind", ""))[:40], str(msg.get("text", ""))[:300]
+                    conn.span("safety_violation", 0, kind=vk, text=vt)
+                    conn.repair.on_safety_violation(vk, vt)
                 elif kind == "dev" and msg.get("scenario") in SCENARIOS and settings.dev_endpoints:
                     await conn.set_scenario(msg["scenario"])
                 elif kind == "dev":

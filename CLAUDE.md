@@ -11,7 +11,7 @@ Where documents disagree, **BUILD_GUIDE.md wins** (e.g. 8 coarse tools exposed t
 
 ## Hard rules (never break these)
 1. **The language model never ranks faults.** The diagnosis ledger (Bayes update + value-of-information next step) is plain, deterministic, unit-tested Python. The voice model only converses, explains and phrases what the engine returns.
-2. **Every power instruction goes through the safety gate.** The voice model calls `request_power_step`; the engine checks the camera-read supply voltage and current limit (fresh within 20 s, confidence ≥ 0.9) and returns either the exact approved sentence or a block reason. No other path may tell the user to connect power.
+2. **Every power instruction goes through the safety gate.** The gate checks the camera-read supply voltage and current limit (fresh within 20 s, confidence ≥ 0.9) and returns either the exact approved sentence or a block reason. The gate's decision may reach the model through `request_power_step` **or** inside `next_step` when the next step needs power; either way only the gate's exact sentence may be spoken. **Backstop:** an output guardrail watches the model's own transcript; a power instruction spoken without a gate approval in the same turn is interrupted, corrected and logged as a violation. Prompt rules alone are not enough (a 4 Nov run proved the model will say it unprompted). **Approval lifetime:** an approval is bound to one power action and the supply settings it was checked against; the gate's exact sentence may be repeated while it is valid. It ends when the user confirms the action, after 20 s, when the supply reading changes, on barge-in, or when a different power action is approved. After that the sentence is blocked again.
 3. **Every instrument reading uses both readers.** Reader A (OpenAI vision model, strict JSON schema) and Reader B (local seven-segment OCR) on the same two frames ~150 ms apart; accept only on agreement of digits and decimal point; otherwise low confidence and ask the user to read it aloud. Never trust a single frame or a single reader.
 4. **At most 8 tools are exposed to the voice model**: `start_repair`, `get_reading`, `watch_boot_current`, `record_spoken_reading`, `next_step`, `request_power_step`, `explain`, `close_repair`. Fine-grained tools stay inside the engine/evidence server.
 5. **The OpenAI API key never reaches the browser.** The browser gets short-lived Realtime client secrets from the engine.
@@ -28,9 +28,19 @@ Where documents disagree, **BUILD_GUIDE.md wins** (e.g. 8 coarse tools exposed t
 ## Verify before you write voice code
 OpenAI's Realtime API and Agents SDK change often. **Before writing or changing voice/realtime code, look up the current docs** (Agents SDK voice agents guide, Realtime API reference, realtime prompting guide) and use current model names, event names and config keys. Do not rely on memory for these. Note any differences from the docs in this repo in `docs/NOTES.md`.
 
-## Settings that are already decided
-- Turn detection: `semantic_vad`, eagerness `medium`; push-to-talk fallback.
+## Settings that are already decided (updated 4 Nov from eval/REPORT-2026-11-04.md)
+- **Turn mode: push-to-talk on a USB foot pedal is the default** (configurable key, default `Space`). `semantic_vad` eagerness `medium` is the switchable hands-free mode. **Do not use `server_vad`** (it cut 8–9 of 10 paused lines).
+- **Preamble: local pre-recorded clip (approach B)** played on the tool-call event; the model is told not to speak before tool results. Clip language follows the session's main language, not the previous turn.
+- **Model: `gpt-realtime-2.1-mini`** for development and as the working default; flagship revisited only after a real-voice quality check.
+- **Prompt: v2_local** is the base; `max_output_tokens: 220` (~8 s) as a safety net only.
+- **Latency targets (push-to-talk, from Pune, ~300 ms RTT):** real end → audible reply ≤ 1.3 s p95; real end → preamble ≤ 1.0 s p95; real end → value spoken ≤ 2.5 s p95 once real readings are pre-read.
+- **Connect time ~3.9 s is accepted** as a one-time cost. Session rotation and reconnects must **pre-open the next session in the background** and swap when ready, so the user never waits for a reconnect.
+- **Readings are pre-read (vision phase, not before):** when a display becomes stable, both readers run immediately and the agreed value is cached, so `get_reading` returns in ~100 ms. The two-reader agreement rule is unchanged.
 - Reasoning effort on the realtime model: `low`.
+- **Prompt default: `v3_local`** (drives all 8 tools).
+- **Reply language is fixed per session** (set from the first two turns or a screen toggle, sent to the model as an engine message), not chosen turn by turn. Numbers and trade terms stay in English.
+- **Agents SDK pinned at 0.21.0.** The page drops the SDK's per-turn transcript requests that stalled the event channel; any SDK upgrade must re-run the stall test first.
+- **Cost control:** the harness logs cost per run from API usage, stops at a configurable budget, and runs at most 2 lanes by default. Never start a long eval run without stating its estimated cost.
 - Truncation: `retention_ratio` 0.8 with a `post_instructions` token cap (~8000).
 - Rotate the realtime session after ~25 turns or ~30 min at a natural pause, seeded with an engine summary.
 - Mic: `echoCancellation: true`, `autoGainControl: false`, no extra client denoiser; headset assumed.
@@ -45,6 +55,7 @@ OpenAI's Realtime API and Agents SDK change often. **Before writing or changing 
 - Ask before adding dependencies or new services.
 
 ## Git and secrets
+- **Never run git commands that change history or state**: no `git commit`, `git push`, `git add`, `git checkout -b`, `git merge`, `git rebase`, `git stash`, `git reset`, `git tag`. All commits are made manually by the owner. You may run read-only git commands (`git status`, `git diff`, `git log`). At the end of a phase, list the changed files and suggest a commit message; do not commit.
 - The repo is **public** (hackathon rule). Never commit `.env`, keys, field footage, or anything under `.claude/`.
 - `.gitignore` must include: `.env`, `.claude/`, `data/`, `frames/`, `*.sqlite`, `node_modules/`, `__pycache__/`.
 - Do not create git repos or commit inside `.claude/`.

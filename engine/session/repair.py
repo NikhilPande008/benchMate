@@ -26,7 +26,8 @@ from engine.safety import (
     check_power,
     device_out_of_scope,
 )
-from engine.session.language import SessionLanguage
+from engine.safety.approval import Approval, EndReason, settings_of
+from engine.session.language import NOTE as LANGUAGE_NOTE, SessionLanguage, clear_language
 from mcp_evidence.packs import classify_band, classify_keywords, load_pack, model_lookup
 from mcp_evidence.packs.schema import Measurement, Pack
 from mcp_evidence.schema import BootSample, EvidenceError, EvidenceRecord, new_id
@@ -116,7 +117,7 @@ class RepairSession:
     stopped: str | None = None
     supply: EvidenceRecord | None = None
     evidence: list[EvidenceRecord] = field(default_factory=list)
-    approvals: Approvals = field(default_factory=lambda: Approvals(ttl_s=120))
+    approvals: Approvals = field(default_factory=Approvals)  # lifetime rules: engine/safety/approval.py
     pending_step: Step | None = None
     remeasure: str | None = None  # measurement the conflict rule asked to re-measure
     awaiting_spoken: str | None = None  # measurement to be read aloud after a camera failure
@@ -129,6 +130,7 @@ class RepairSession:
     lang: SessionLanguage = field(default_factory=SessionLanguage)
     events: list[dict[str, Any]] = field(default_factory=list)
     _watch: asyncio.Task | None = None
+    _power_sent: int = 0  # approvals.ended entries already sent as power.ended events
     _sends: set[asyncio.Task] = field(default_factory=set)
 
     # --- plumbing -----------------------------------------------------------------------------
@@ -182,6 +184,8 @@ class RepairSession:
             **{k: getattr(self, k) for k in self.STATE_FIELDS},
             "lang": self.lang.main,
             "lang_streak": self.lang._streak,
+            "lang_seen": self.lang.seen,
+            "lang_source": self.lang.source,
             "pending": self.pending_step.measurement_id if self.pending_step else None,
         }
 
@@ -206,7 +210,8 @@ class RepairSession:
                 r._apply(rec, use == "remeasure")
         for k in cls.STATE_FIELDS:
             setattr(r, k, state.get(k))
-        r.lang = SessionLanguage(state.get("lang"), _streak=state.get("lang_streak") or 0)
+        r.lang = SessionLanguage(state.get("lang"), _streak=state.get("lang_streak") or 0,
+                                 seen=state.get("lang_seen", 2 if state.get("lang") else 0), source=state.get("lang_source"))
         if state.get("pending") and r.ledger:
             r.pending_step = next((c for c in candidates(r.ledger) if c.measurement_id == state["pending"]), None)
         return r
@@ -304,9 +309,9 @@ class RepairSession:
     # --- hooks from the conversation ----------------------------------------------------------
 
     async def on_user_transcript(self, text: str, lang_tag: str | None) -> None:
-        changed = self.lang.observe(lang_tag)
+        changed = self.lang.observe(clear_language(text, lang_tag))
         if changed:
-            self._event("session.lang", lang=self.lng)
+            await self._language_changed()
         report = battery_report(text)
         if report == "danger" and not self.stopped:
             await self.stop_session("battery or smoke reported")
@@ -321,15 +326,71 @@ class RepairSession:
             self._watch.cancel()
         if self.readback_pending:
             self.readback_pending.user_confirmed = _is_confirmation(text)
+        if self.approvals.confirm(text):
+            self._power_events()
+
+    async def set_language(self, lang: str) -> None:
+        """The companion screen's language toggle."""
+        if self.lang.toggle(lang):
+            await self._language_changed()
+            self._save()
+
+    async def _language_changed(self) -> None:
+        """Tell the screen (preamble clip) and the voice model (an engine note; instructions never change)."""
+        self._event("session.lang", lang=self.lng, source=self.lang.source, decided=self.lang.decided)
+        await self.note(LANGUAGE_NOTE[self.lng])
+
+    def on_safety_violation(self, kind: str, text: str) -> None:
+        """The page's output guardrail stopped a power instruction no live approval covered
+        (CLAUDE.md rule 2 backstop). Logged, and any pending approval is withdrawn, so nothing the
+        user does on the strength of it can power the board without a fresh gate check."""
+        cancelled = self._end_approval("violation")
+        self._event("safety.violation", kind=kind[:40], text=text[:200], cancelled=cancelled.step if cancelled else None)
 
     def on_barge_in(self) -> None:
-        cancelled = self.approvals.cancel()
-        if cancelled:
-            self._event("power.cancelled", step=cancelled.step)
+        self._end_approval("barge_in")
+
+    # --- power approval lifetime (CLAUDE.md rule 2; rules in engine/safety/approval.py) -------
+
+    def _power_events(self) -> None:
+        """One power.ended event (to the screen and the page's guardrail) per approval ending."""
+        for a, reason in self.approvals.ended[self._power_sent:]:
+            self._event("power.ended", id=a.id, step=a.step, reason=reason)
+        self._power_sent = len(self.approvals.ended)
+
+    def _end_approval(self, reason: EndReason) -> Approval | None:
+        a = self.approvals.end(reason)
+        self._power_events()
+        return a
+
+    def _consume(self, step: str) -> bool:
+        ok = self.approvals.consume(step)
+        self._power_events()
+        return ok
+
+    def _set_supply(self, rec: EvidenceRecord) -> None:
+        """Every new supply reading: settings that differ from the ones an approval was checked
+        against (or can't be read) end it."""
+        self.supply = rec
+        self.approvals.on_supply(settings_of(rec))
+        self._power_events()
+
+    def _expire_later(self) -> None:
+        """Tell the screen and the page when the approval runs out (validity is also checked on use)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        def check() -> None:
+            self.approvals.expire()
+            self._power_events()
+
+        loop.call_later(self.approvals.ttl_s + 0.05, check)
 
     async def stop_session(self, reason: str) -> None:
         self.stopped, self.state = reason, "stopped"
-        self.approvals.cancel()
+        self._end_approval("stopped")
         if self._watch and not self._watch.done():
             self._watch.cancel()
         self._event("safety.stop", reason=reason)
@@ -394,7 +455,7 @@ class RepairSession:
             self._camera(rec)
             if isinstance(rec, EvidenceError):
                 return {"error": rec.error, "ask": "read_supply_aloud"}
-            self.supply = rec
+            self._set_supply(rec)
             self._add_evidence(rec)
             assert rec.fields
             v, lim = rec.fields["set_voltage"], rec.fields["current_limit"]
@@ -411,7 +472,7 @@ class RepairSession:
         if kind == "port_current":
             if err := self._require_repair():
                 return err
-            if not self.approvals.consume("connect_port_supply"):
+            if not self._consume("connect_port_supply"):
                 return {"error": "power_step_required", "step": "connect_port_supply"}
             rec = await self._timed(self.bench.read_port_current(self.session_id))
             self._camera(rec)
@@ -464,7 +525,7 @@ class RepairSession:
             # the approval is for another check (seen 4 Nov: the heat check's approval spent on a watch)
             return {"error": "not_this_step", "measurement": waiting.id, "use": USE_TOOL[waiting.kind]}
         step = "connect_boot_cable" if trigger == "on_connect" else "press_power_key"
-        if not self.approvals.consume(step):
+        if not self._consume(step):
             return {"error": "power_step_required", "step": step}
         assert self.pack
         t = self.pack.boot.thresholds
@@ -566,7 +627,7 @@ class RepairSession:
         assert rb and self.pack
         self.readback_pending = None
         m = self._measurement(rb.measurement_id) if rb.measurement_id else None
-        if m and m.requires_power and not self.approvals.consume(m.requires_power):
+        if m and m.requires_power and not self._consume(m.requires_power):
             return {"error": "power_step_required", "step": m.requires_power}
         rec = rb.record
         rec.confidence, rec.confirmed, rec.needs_confirmation = CONFIRMED_CONFIDENCE, True, False
@@ -591,9 +652,11 @@ class RepairSession:
         if self.readback_pending and self.readback_pending.user_confirmed:
             # The user said "haan, sahi hai" but the voice model asked for the next step instead of
             # confirming (seen 4 Nov: a 15-turn loop). Their own words confirm it; record and go on.
+            measurement = self.readback_pending.measurement_id
             done = self._confirm_readback()
             if "error" in done:
                 return done
+            self._event("readback.user_confirmed", measurement=measurement)
             nxt = await self._next_step()
             return {"recorded": done["recorded"], "class": done["class"]} | {k: v for k, v in nxt.items() if k != "reason"}
         if self.readback_pending:
@@ -627,14 +690,15 @@ class RepairSession:
         """The step line; for a step that needs power, with the safety gate's answer already in it.
         The voice model then has the gate's exact sentence (or the block and what to set) instead
         of a step name it might turn into its own power instruction (seen 4 Nov: "boot cable
-        connect karo" with no approval). The approval is the gate's, single-use, as for
-        request_power_step."""
+        connect karo" with no approval). The approval is the gate's, as for request_power_step."""
         out = self._step_line(mid, kind, reason)
         if out["step"] != "power":
             return out
         gate = await self._gate(out["power_step"])
         del out["reason"], out["set"]  # explain("why") still gives the reason; the gate says what to set
         out |= {"approved": gate.approved, "say": gate.say}
+        if gate.approved and self.approvals.pending:
+            out["approval"] = self.approvals.pending.id
         if gate.reason:
             out["blocked"] = gate.reason
         if gate.set_values:
@@ -678,17 +742,23 @@ class RepairSession:
     async def request_power_step(self, step: str) -> dict[str, Any]:
         if self.pack is None:
             return {"error": "start_repair_first"}
-        return (await self._gate(step)).line()
+        res = await self._gate(step)
+        out = res.line()
+        if res.approved and self.approvals.pending:
+            out["approval"] = self.approvals.pending.id  # the page's guardrail ties endings to it
+        return out
 
     async def _gate(self, step: str) -> GateResult:
         """The safety gate (CLAUDE.md rule 2), with a fresh supply read if needed. An approval is
-        single-use and is cancelled by a barge-in."""
+        bound to this step and the supply settings checked; its lifetime is in approval.py."""
         assert self.pack
         await self._fresh_supply(step)
         res = check_power(step, self.supply, self.pack, self.battery, self.stopped)  # type: ignore[arg-type]
         if res.approved:
-            approval = self.approvals.grant(step)
-            self._event("power.approved", step=step, id=approval.id)
+            approval, _ = self.approvals.grant(step, settings_of(self.supply))
+            self._power_events()  # the one it replaced
+            self._event("power.approved", **approval.line(self.approvals.ttl_s), say=res.say)
+            self._expire_later()
         else:
             self._event("power.blocked", step=step, reason=res.reason)
         return res
@@ -704,7 +774,7 @@ class RepairSession:
         rec = await self._timed(self.bench.read_supply(self.session_id))
         self._camera(rec)
         if isinstance(rec, EvidenceRecord):
-            self.supply = rec
+            self._set_supply(rec)
             self._add_evidence(rec)
 
     async def explain(self, topic: str, level: str | None = None) -> dict[str, Any]:

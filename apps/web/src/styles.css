@@ -47,3 +47,6 @@ select { font: inherit; }
 .ledger ol { margin: 0.25rem 0; padding-left: 1.25rem; }
 .ledger .p { color: var(--muted); font-variant-numeric: tabular-nums; }
 .ledger .step { margin: 0.25rem 0 0; color: var(--muted); }
+
+.controls button.on { font-weight: 600; border-color: var(--fg); }
+.muted { color: var(--muted); }

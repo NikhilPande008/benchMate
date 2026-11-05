@@ -4,6 +4,10 @@
     uv run python eval/latency_script/run_experiments.py --start-engine --configs base sem_high --lanes 2
     uv run python eval/latency_script/run_experiments.py --connect 10            # connect-time benchmark
     uv run python eval/latency_script/run_experiments.py --analyse x-20261104-1010   # re-print a stored batch
+    uv run python eval/latency_script/run_experiments.py --configs v3_b_ptt --estimate    # cost forecast, no API calls
+
+Cost control: every line's cost is logged from recorded usage, and the batch stops once it has cost
+--budget dollars (default 2). --lines t01 p0* runs a subset. At most 2 lanes (default 1).
 
 Turn-driven: the page plays each line into an injected audio stream only after the previous
 reply has finished (apps/web/src/harness.ts), so the real end of speech is known exactly.
@@ -26,8 +30,10 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from analysis import analyse_run, fmt  # noqa: E402
+from budget import DEFAULT_BUDGET_USD, MAX_LANES, BudgetExceeded, BudgetGuard, estimate, select_lines  # noqa: E402
 from engine.config import Settings  # noqa: E402
 from engine.telemetry import make_engine  # noqa: E402
+from engine.telemetry.cost import run_cost  # noqa: E402
 
 HERE = Path(__file__).parent
 AUDIO = HERE / "audio"
@@ -50,6 +56,8 @@ CONFIGS: dict[str, dict] = {
     "v2_b_ptt": {"turn_mode": "ptt", "prompt": "v2_local", "cap": True},
     # Phase 2: the 8-tool prompt (decided defaults: push-to-talk, local clip, cap).
     "v3_b_ptt": {"turn_mode": "ptt", "prompt": "v3_local", "cap": True},
+    # Phase 2c: session language from the engine, mostly Hinglish examples.
+    "v4_b_ptt": {"turn_mode": "ptt", "prompt": "v4_local", "cap": True},
 }
 
 BROWSER_ARGS = [
@@ -83,11 +91,26 @@ def page_url(base: str, cfg: dict, model: str, run_id: str, harness: bool, pool:
     return f"{base}/?" + "&".join(f"{k}={v}" for k, v in q.items() if v != "")
 
 
+LINE_SETS = ["synthetic", "en", "hinglish", "hi", "redteam", "real", "real-en", "real-hinglish", "real-hi"]
+
+
+def audio_dir(which: str) -> str:
+    """Folder under audio/ that holds a set's clips (real-<lang> is a filter of real)."""
+    return "real" if which.startswith("real") else which
+
+
 def load_manifest(which: str) -> list[dict]:
-    path = AUDIO / which / "manifest.json"
+    """A set's lines. synthetic alternates languages; en / hinglish / hi stay in one language;
+    real-<lang> keeps only your recordings in that language."""
+    path = AUDIO / audio_dir(which) / "manifest.json"
     if not path.exists():
-        raise SystemExit(f"{path} missing: run make_clips.py {which}")
-    return json.loads(path.read_text())["lines"]
+        raise SystemExit(f"{path} missing: run make_clips.py {audio_dir(which)}")
+    lines = json.loads(path.read_text())["lines"]
+    if which.startswith("real-"):
+        lines = [l for l in lines if l["lang"] == which.removeprefix("real-")]
+        if not lines:
+            raise SystemExit(f"no {which.removeprefix('real-')} recordings in {path}")
+    return lines
 
 
 def balanced(lines: list[dict], min_plain: int = 30, min_tool: int = 15) -> list[dict]:
@@ -101,17 +124,31 @@ def balanced(lines: list[dict], min_plain: int = 30, min_tool: int = 15) -> list
     return out
 
 
+def planned_lines(which: str, patterns: list[str] | None, limit: int | None) -> list[dict]:
+    """The lines a config will run: a --lines subset as given, otherwise the balanced set."""
+    manifest = load_manifest(which)
+    if patterns:
+        lines = select_lines(manifest, patterns)
+    elif which in ("en", "hinglish", "hi", "redteam"):
+        lines = manifest  # a single-language set runs as written (20 lines), never repeated
+    else:
+        lines = balanced(manifest)
+    return lines[:limit]
+
+
 def run_config(
-    base: str, name: str, which: str, model: str, run_id: str, headed: bool, release_lag_ms: int, limit: int | None = None
-) -> None:
+    base: str, name: str, which: str, model: str, run_id: str, headed: bool, release_lag_ms: int,
+    limit: int | None = None, patterns: list[str] | None = None, guard: BudgetGuard | None = None,
+) -> bool:
+    """Run one config; False if the batch budget stopped it."""
     from playwright.sync_api import sync_playwright
 
     cfg = CONFIGS[name]
-    lines = balanced(load_manifest(which))[:limit]
+    lines = planned_lines(which, patterns, limit)
     specs = [
         {
             "id": l["id"],
-            "url": f"/harness-audio/{which}/{l['file']}",
+            "url": f"/harness-audio/{audio_dir(which)}/{l['file']}",
             "set": which,
             "kind": l["kind"],
             "lang": l["lang"],
@@ -122,26 +159,36 @@ def run_config(
         for l in lines
     ]
     chunks = [specs[i : i + SESSION_MAX_LINES] for i in range(0, len(specs), SESSION_MAX_LINES)]
+    within_budget = True
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=not headed, args=BROWSER_ARGS)
         for k, chunk in enumerate(chunks, 1):
+            if not within_budget:
+                break
             ctx = browser.new_context(permissions=["microphone"])
             page = ctx.new_page()
             page.route("**/harness-audio/**", lambda route: route.fulfill(path=str(AUDIO / route.request.url.split("/harness-audio/")[1])))
             page.goto(page_url(base, cfg, model, run_id, harness=True))
             page.wait_for_function("window.benchmate && window.benchmate.status.startsWith('connected')", timeout=30_000)
             print(f"  [{name}] session {k}/{len(chunks)}: {len(chunk)} lines", flush=True)
-            page.evaluate(
-                """async ([lines, opts]) => {
-                    await window.harness.loadClips(lines.map((l) => l.url));
-                    return window.harness.runLines(lines, opts);
-                }""",
-                [chunk, {"settleMs": 1200, "pttReleaseLagMs": release_lag_ms}],
-            )
+            page.evaluate("async (urls) => window.harness.loadClips(urls)", [l["url"] for l in chunk])
+            for spec in chunk:  # one line at a time, so the budget is checked after every line
+                page.evaluate(
+                    "async ([lines, opts]) => window.harness.runLines(lines, opts)",
+                    [[spec], {"settleMs": 1200, "pttReleaseLagMs": release_lag_ms}],
+                )
+                if guard:
+                    try:
+                        guard.check(f"[{name}] {spec['id']}")
+                    except BudgetExceeded as exc:
+                        print(f"  STOPPED: {exc}", flush=True)
+                        within_budget = False
+                        break
             page.evaluate("window.benchmate.stop()")
             page.wait_for_timeout(1000)
             ctx.close()
         browser.close()
+    return within_budget
 
 
 def run_connect(base: str, n: int, model: str, run_id: str, pool: bool) -> None:
@@ -186,9 +233,13 @@ def print_summary(res: dict) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--configs", nargs="+", default=list(CONFIGS), choices=list(CONFIGS))
-    ap.add_argument("--set", default="synthetic", choices=["synthetic", "real"])
+    ap.add_argument("--set", default="synthetic", choices=LINE_SETS,
+                    help="synthetic alternates languages; en/hinglish/hi stay in one; real[-<lang>] are your recordings")
     ap.add_argument("--model", default="mini")
-    ap.add_argument("--lanes", type=int, default=1)
+    ap.add_argument("--lanes", type=int, default=1, choices=range(1, MAX_LANES + 1), help="parallel browsers (at most 2)")
+    ap.add_argument("--budget", type=float, default=DEFAULT_BUDGET_USD, help="stop the batch once it has cost this many USD")
+    ap.add_argument("--lines", nargs="+", metavar="ID", help="only these line ids (shell patterns: t01 p0* *-pause)")
+    ap.add_argument("--estimate", action="store_true", help="print the estimated cost and exit (no API calls)")
     ap.add_argument("--base", default="http://127.0.0.1:8000")
     ap.add_argument("--start-engine", action="store_true")
     ap.add_argument("--headed", action="store_true")
@@ -204,6 +255,19 @@ def main() -> None:
     RUNS.mkdir(exist_ok=True)
     stamp = args.stamp or datetime.now().strftime("%Y%m%d-%H%M")
     run_ids = lambda: [f"x-{stamp}-{c}-{args.set}-{args.model}" for c in args.configs]  # noqa: E731
+
+    if args.estimate:
+        db = make_engine(settings.db_path)
+        model_id = settings.resolve_model(args.model) or args.model
+        total = 0.0
+        for name in args.configs:
+            n = len(planned_lines(args.set, args.lines, args.limit))
+            usd, per_line, seen = estimate(db, model_id, n, ["x-", "e2e-"], CONFIGS[name]["prompt"])
+            total += usd
+            basis = f"{seen} earlier lines" if seen else "no history: default"
+            print(f"{name}: {n} lines x ${per_line:.4f} = ${usd:.2f}  ({model_id}, {basis})")
+        print(f"total: ${total:.2f}  (budget stop at ${args.budget:.2f})")
+        return
 
     if args.analyse:
         db = make_engine(settings.db_path)
@@ -244,10 +308,13 @@ def main() -> None:
                 print(f"  secret sources: {res['summary']['secret_sources']}")
             return
 
+        guard = BudgetGuard(args.base, f"x-{stamp}-", args.budget)
         if args.worker or args.lanes <= 1:
             for name, rid in zip(args.configs, run_ids()):
                 print(f">>> {name}: {rid}", flush=True)
-                run_config(args.base, name, args.set, args.model, rid, args.headed, args.ptt_release_lag_ms, args.limit)
+                if not run_config(args.base, name, args.set, args.model, rid, args.headed, args.ptt_release_lag_ms,
+                                  args.limit, args.lines, guard):
+                    break
             if args.worker:
                 return
         else:
@@ -255,8 +322,9 @@ def main() -> None:
             workers = [
                 subprocess.Popen(
                     [sys.executable, __file__, "--worker", "--stamp", stamp, "--set", args.set, "--model", args.model,
-                     "--ptt-release-lag-ms", str(args.ptt_release_lag_ms), "--configs", *g]
+                     "--ptt-release-lag-ms", str(args.ptt_release_lag_ms), "--budget", str(args.budget), "--configs", *g]
                     + (["--limit", str(args.limit)] if args.limit else [])
+                    + (["--lines", *args.lines] if args.lines else [])
                     + (["--headed"] if args.headed else []),
                     cwd=REPO,
                 )
@@ -272,9 +340,12 @@ def main() -> None:
         db = make_engine(settings.db_path)
         for rid in run_ids():
             res = analyse_run(db, rid)
+            res["cost"] = run_cost(db, rid).line()
             (out_dir / f"{rid}.json").write_text(json.dumps(res, indent=1, ensure_ascii=False))
             print_summary(res)
-        print(f"\nraw results: {out_dir}")
+            print(f"  cost: ${res['cost']['usd']:.3f} for {res['cost']['lines']} lines")
+        print(f"\nbatch cost: ${run_cost(db, f'x-{stamp}-').usd:.3f}")
+        print(f"raw results: {out_dir}")
     finally:
         if proc:
             proc.terminate()

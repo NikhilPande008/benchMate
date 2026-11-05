@@ -30,13 +30,14 @@ def _tool(ws, call_id, name, args=None):
     return json.loads(msgs[-1]["output"]), msgs
 
 
-def _until(ws, pred):
+def _until(ws, pred, limit=200):
     msgs = []
-    while True:
+    for _ in range(limit):  # never hang the suite on a missing event
         msg = ws.receive_json()
         msgs.append(msg)
         if pred(msg):
             return msgs
+    raise AssertionError(f"no matching message in {limit}: {[m.get('event') or m['type'] for m in msgs][-10:]}")
 
 
 def test_tool_call_round_trip_returns_one_json_line(client):
@@ -166,7 +167,8 @@ def test_barge_in_cancels_a_pending_power_approval(client):
         gate, _ = _tool(ws, "b3", "request_power_step", {"step": "connect_boot_cable"})
         assert gate["approved"] is True
         ws.send_json({"type": "event", "name": "barge_in"})
-        assert _until(ws, lambda m: m.get("event") == "power.cancelled")[-1]["step"] == "connect_boot_cable"
+        ended = _until(ws, lambda m: m.get("event") == "power.ended")[-1]
+        assert (ended["step"], ended["reason"], ended["id"]) == ("connect_boot_cable", "barge_in", gate["approval"])
         out, _ = _tool(ws, "b4", "watch_boot_current")
         assert out == {"error": "power_step_required", "step": "connect_boot_cable"}
 
@@ -175,8 +177,8 @@ def test_battery_danger_in_a_user_transcript_injects_an_urgent_stop(client):
     with client.websocket_connect("/ws") as ws:
         _hello(ws)
         ws.send_json({"type": "transcript", "role": "user", "text": "battery phool gayi hai", "t_ms": 1.0})
-        inject = _until(ws, lambda m: m["type"] == "inject")[-1]
-        assert inject["urgent"] is True and "SAFETY STOP" in inject["text"]
+        inject = _until(ws, lambda m: m["type"] == "inject" and m["urgent"])[-1]  # after the language note
+        assert "SAFETY STOP" in inject["text"]
         out, _ = _tool(ws, "s1", "next_step")
         assert out["error"] == "session_stopped"
 
@@ -189,3 +191,35 @@ def test_session_language_event_after_two_hindi_turns(client):
         for t in (2.0, 3.0):
             ws.send_json({"type": "transcript", "role": "user", "text": "meter padho, kitna dikha raha hai", "t_ms": t})
         assert _until(ws, lambda m: m.get("event") == "session.lang")[-1]["lang"] == "hi"
+
+
+def test_a_guardrail_violation_is_logged_and_withdraws_the_approval(client, settings):
+    with client.websocket_connect("/ws") as ws:
+        _hello(ws, session_id="se_viol")
+        _tool(ws, "v1", "start_repair", {"model": "demo", "symptom": "dead", "battery": "removed"})
+        gate, _ = _tool(ws, "v2", "request_power_step", {"step": "connect_boot_cable"})
+        assert gate["approved"] is True
+        ws.send_json({"type": "event", "name": "safety_violation", "kind": "press_power_key", "text": "Press the power key now."})
+        ev = _until(ws, lambda m: m.get("event") == "safety.violation")[-1]
+        assert ev["kind"] == "press_power_key" and ev["cancelled"] == "connect_boot_cable"
+        out, _ = _tool(ws, "v3", "watch_boot_current")
+        assert out["error"] == "power_step_required"
+    flush_telemetry(client)
+    spans = [s for s in load_spans(make_engine(settings.db_path), "run-ws", ["se_viol"]) if s.name == "safety_violation"]
+    assert len(spans) == 1 and "Press the power key" in spans[0].attrs
+
+
+def test_the_language_toggle_sets_the_session_language_and_tells_the_model(client):
+    with client.websocket_connect("/ws") as ws:
+        _hello(ws, session_id="se_toggle")
+        ws.send_json({"type": "lang", "lang": "hi"})
+        seen: dict[str, dict] = {}
+        while len(seen) < 2:  # the note and the UI event, in either order
+            m = ws.receive_json()
+            if m.get("event") == "session.lang":
+                seen["event"] = m
+            elif m["type"] == "inject":
+                seen["note"] = m
+        ev, note = seen["event"], seen["note"]
+        assert (ev["lang"], ev["source"], ev["decided"]) == ("hi", "toggle", True)
+        assert note["urgent"] is False and note["text"].startswith("[engine] Session language: Hinglish")

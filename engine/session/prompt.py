@@ -17,6 +17,8 @@ PROMPT_DIR = Path(__file__).parent / "prompts"
 # v2 / v2_local: as v1, plus latest-turn language rule and one-sentence replies (4 Nov results).
 # v3 / v3_local: Phase 2. All 8 tools and the repair flow, Hinglish for mixed turns, values and
 # power steps only from tool results, "[engine]" messages. v3 and v3_local differ only in Preambles.
+# v4_local: v3_local with a session language from the engine instead of the latest-turn rule, and
+# mostly Hinglish examples (Phase 2c: v3's Hindi reply rate was 28% in Hinglish sessions).
 PROMPTS = {
     "v0": "realtime_v0.md",
     "v1": "realtime_v1.md",
@@ -25,8 +27,9 @@ PROMPTS = {
     "v2_local": "realtime_v2_local.md",
     "v3": "realtime_v3.md",
     "v3_local": "realtime_v3_local.md",
+    "v4_local": "realtime_v4_local.md",
 }
-LOCAL_PREAMBLE_PROMPTS = {"v1_local", "v2_local", "v3_local"}
+LOCAL_PREAMBLE_PROMPTS = {"v1_local", "v2_local", "v3_local", "v4_local"}
 CURRENT_PROMPT = PROMPTS["v3_local"]
 
 # Trade terms passed to the transcription model as keywords (screen/log transcripts only).

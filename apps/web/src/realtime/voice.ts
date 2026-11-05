@@ -13,6 +13,8 @@ import {
   type TransportEvent,
 } from '@openai/agents-realtime';
 
+import { filterDataChannel } from './channelFilter';
+import { PowerApprovals } from './powerGuard';
 import { EngineSocket, type EngineNote, type UiEvent } from './engine';
 import { clipLangFor, LocalPreamble, type PreambleLang, type PreamblePath } from './preamble';
 import { nowMs, Spans, watchAudioOnset } from './telemetry';
@@ -108,6 +110,7 @@ export type VoiceHandle = {
   clipPlaying: () => boolean;
   scenario: () => string | null;
   setScenario: (name: string) => void;
+  setLanguage: (lang: PreambleLang) => void;
   /** Diagnostics: the WebRTC peer connection to OpenAI. */
   peer: () => RTCPeerConnection | null;
   stop: () => void;
@@ -191,6 +194,12 @@ function sdkConfig(cfg: VoiceConfig): Partial<RealtimeSessionConfig> {
   };
 }
 
+// Passed to the model by the SDK when the power guardrail trips (with the offending sentence).
+const POWER_POLICY_HINT =
+  "Power instructions may be spoken only with the safety gate's exact sentence, in the turn the gate approved it. " +
+  'Say one short sentence telling the user not to connect or press anything yet, in the reply language ' +
+  `("Ruko, abhi kuch connect mat karo." or "Wait, don't connect anything yet."), then call next_step.`;
+
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
 
@@ -273,7 +282,12 @@ async function connectSession(
   let preamble: LocalPreamble | null = null;
   let peer: RTCPeerConnection | null = null;
 
+  // Rule 2 backstop: the safety gate's live approval (from its tool results), with the approval
+  // lifetime; the engine's power.ended events end it too.
+  const approvals = new PowerApprovals();
+
   setUiHook((ev) => {
+    approvals.onEngineEvent(ev);
     if (ev.event === 'session.lang' && (ev.lang === 'en' || ev.lang === 'hi')) state.sessionLang = ev.lang;
   });
   const engineReady = engine
@@ -301,6 +315,7 @@ async function connectSession(
         try {
           const output = await engine.callTool(callId, spec.name, input, turn);
           spans.record('tool_result_received', { name: spec.name, call_id: callId });
+          approvals.noteToolOutput(spec.name, output);
           if (preamble) {
             // The value reply must not talk over the clip: hold the output until it has finished.
             const t0 = nowMs();
@@ -343,6 +358,19 @@ async function connectSession(
     transport,
     model: cfg.model,
     config: sdkConfig(cfg),
+    // Checked on the transcript every 12 characters and on the final one; the transcript usually
+    // runs ahead of the audio, so a trip often cuts the instruction before it is heard.
+    outputGuardrails: [
+      {
+        name: 'power_instruction_without_gate',
+        policyHint: POWER_POLICY_HINT,
+        execute: async ({ agentOutput }) => {
+          const v = approvals.check(String(agentOutput ?? ''));
+          return { tripwireTriggered: v !== null, outputInfo: v ?? {} };
+        },
+      },
+    ],
+    outputGuardrailSettings: { debounceTextLength: 12 },
     workflowName: 'benchmate',
     groupId: secret.session_id,
     traceMetadata: { prompt_version: cfg.prompt_version, run_id: runId ?? '' },
@@ -350,10 +378,11 @@ async function connectSession(
 
   // Barge-in: the user starts talking while the agent speaks or a reply is in flight. The engine
   // cancels any pending power approval, so a power step is never acted on half-heard.
-  const bargeInIfBusy = (via: string) => {
-    if (!state.audioPlaying && state.responsesInFlight === 0) return;
+  const bargeInIfBusy = (via: string): boolean => {
+    if (!state.audioPlaying && state.responsesInFlight === 0) return false;
     spans.record('barge_in', { via });
     engine.bargeIn();
+    return true;
   };
 
   // Engine notes go in as system items; instructions and tools never change (rule 7). Urgent
@@ -393,7 +422,7 @@ async function connectSession(
       }
       case 'input_audio_buffer.speech_started':
         touch();
-        if (turnMode !== 'ptt') bargeInIfBusy('vad');
+        approvals.userTurn(turnMode !== 'ptt' && bargeInIfBusy('vad'));
         spans.record('speech_started', { audio_start_ms: e.audio_start_ms, item_id: e.item_id });
         break;
       case 'input_audio_buffer.speech_stopped': {
@@ -458,6 +487,11 @@ async function connectSession(
           out_text_tokens: r.usage?.output_token_details?.text_tokens,
           in_tokens: r.usage?.input_tokens,
           in_cached_tokens: r.usage?.input_token_details?.cached_tokens,
+          // the split that prices differ by (engine/telemetry/cost.py)
+          in_audio_tokens: r.usage?.input_token_details?.audio_tokens,
+          in_text_tokens: r.usage?.input_token_details?.text_tokens,
+          in_cached_audio_tokens: r.usage?.input_token_details?.cached_tokens_details?.audio_tokens,
+          in_cached_text_tokens: r.usage?.input_token_details?.cached_tokens_details?.text_tokens,
         });
         for (const item of out) {
           if (item.type !== 'message' || item.role !== 'assistant') continue;
@@ -485,6 +519,12 @@ async function connectSession(
     }
   });
   session.on('error', (err) => onEvent({ kind: 'error', text: String((err.error as Error)?.message ?? err.error) }));
+  session.on('guardrail_tripped', (_ctx, _agent, error, details) => {
+    const info = (error.result?.output?.outputInfo ?? {}) as { kind?: string; sentence?: string };
+    spans.record('safety_violation', { kind: info.kind, sentence: info.sentence?.slice(0, 200), item_id: details.itemId });
+    engine.safetyViolation(info.kind ?? 'unknown', info.sentence ?? '', details.itemId);
+    onEvent({ kind: 'error', text: `guardrail: ${info.kind}: ${info.sentence ?? ''}` });
+  });
 
   // --- push-to-talk (OpenAI's WebRTC procedure: clear on down; commit + response.create on up) ---
   const pttDown = () => {
@@ -492,7 +532,7 @@ async function connectSession(
     state.pttDown = true;
     touch();
     spans.record('ptt_down');
-    bargeInIfBusy('ptt');
+    approvals.userTurn(bargeInIfBusy('ptt'));
     if (state.audioPlaying || state.responsesInFlight > 0) session.interrupt();
     session.transport.sendEvent({ type: 'input_audio_buffer.clear' });
     session.mute(false);
@@ -565,6 +605,7 @@ async function connectSession(
     clipPlaying: () => preamble?.isPlaying ?? false,
     scenario: () => engine.scenario,
     setScenario: (name: string) => engine.devScenario(name),
+    setLanguage: (lang: PreambleLang) => engine.setLanguage(lang),
     peer: () => peer,
     stop: () => {
       window.removeEventListener('keydown', onKeyDown);
@@ -580,38 +621,10 @@ async function connectSession(
   };
 }
 
-const TRACED_OUT = new Set(['response.create', 'response.cancel', 'conversation.item.create', 'input_audio_buffer.commit', 'output_audio_buffer.clear']);
-
-/**
- * Wraps the data channel's send: spans for the client events that start, stop or feed responses,
- * including the SDK's own (its response.create after a tool result goes through a private
- * sequencer), and drops the SDK's `conversation.item.retrieve`.
- *
- * Why drop it: agents-realtime 0.21.0 retrieves every user item once its transcription completes.
- * The reply carries the whole item, including the user's audio, and on the WebRTC data channel it
- * holds up every event behind it for 2-6 s (measured 4 Nov, eval/REPORT-2026-11-06.md): the model's
- * reply plays, but response.created and the next tool call arrive seconds late. We never use the
- * retrieved item (transcripts come from ...transcription.completed), so we don't ask for it.
- */
+/** Drop the SDK's stalling item retrieves and trace response events (see channelFilter.ts). */
 function traceOutgoing(transport: OpenAIRealtimeWebRTC, spans: Spans): void {
   const dc = transport.connectionState.dataChannel;
-  if (!dc) return;
-  const send = dc.send.bind(dc) as (data: string) => void;
-  (dc as { send: (data: string) => void }).send = (data: string) => {
-    try {
-      const m = JSON.parse(data) as { type?: string; event_id?: string; item_id?: string; item?: { type?: string; role?: string } };
-      if (m.type === 'conversation.item.retrieve') {
-        spans.record('client_event_dropped', { type: m.type, item_id: m.item_id });
-        return;
-      }
-      if (m.type && TRACED_OUT.has(m.type)) {
-        spans.record('client_event', { type: m.type, event_id: m.event_id, item: m.item ? `${m.item.type}${m.item.role ? `:${m.item.role}` : ''}` : undefined });
-      }
-    } catch {
-      /* not JSON: pass through */
-    }
-    send(data);
-  };
+  if (dc) filterDataChannel(dc as unknown as { send: (data: string) => void }, (name, attrs) => spans.record(name, attrs));
 }
 
 /** SDP exchange timing (resource timing of the /v1/realtime/calls fetch) and network round trip. */

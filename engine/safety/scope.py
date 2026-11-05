@@ -29,7 +29,8 @@ BatteryReport = Literal["danger", "removed", "connected"]
 
 
 def _words(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+|[\u0900-\u097f]+", text.lower())
+    """Latin or Devanagari words; the danda (।, ॥) ends a sentence, it is not part of a word."""
+    return re.findall(r"[a-z0-9]+|[\u0900-\u0963\u0966-\u097f]+", text.lower())
 
 
 def _devanagari_match(word: str, term: str) -> bool:

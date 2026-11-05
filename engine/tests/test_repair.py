@@ -312,6 +312,7 @@ def test_the_users_own_yes_confirms_when_the_model_asks_for_the_next_step(said):
     out = run(r.next_step())
     assert out["recorded"].startswith("zero point zero two volts") and out["class"] == "short"
     assert out["step"] == "power" and r.readback_pending is None and "vbat_conn" in r.ledger.measured()
+    assert events(r, "readback.user_confirmed")[-1]["measurement"] == "vbat_conn"
 
 
 @pytest.mark.parametrize("said", ["nahi, 0.2 hai", "ruko", "zero point two"])
@@ -338,9 +339,10 @@ def test_next_step_before_start_and_in_hindi():
 def test_power_step_approved_with_the_exact_sentence():
     r = run(started(session()))
     out = run(r.request_power_step("connect_boot_cable"))
-    assert out == {"approved": True, "step": "connect_boot_cable", "say": APPROVED["connect_boot_cable"]}
+    assert out == {"approved": True, "step": "connect_boot_cable", "say": APPROVED["connect_boot_cable"], "approval": r.approvals.pending.id}
     assert r.approvals.pending.step == "connect_boot_cable"
-    assert events(r, "power.approved")
+    ev = events(r, "power.approved")[-1]
+    assert (ev["id"], ev["volts"], ev["limit_a"], ev["ttl_s"]) == (out["approval"], 4.0, 1.0, 20.0)
 
 
 @pytest.mark.parametrize(
@@ -412,7 +414,8 @@ def test_barge_in_cancels_the_pending_approval():
     r = run(started(session()))
     run(r.request_power_step("connect_boot_cable"))
     r.on_barge_in()
-    assert r.approvals.pending is None and events(r, "power.cancelled")[-1]["step"] == "connect_boot_cable"
+    ended = events(r, "power.ended")[-1]
+    assert r.approvals.pending is None and (ended["step"], ended["reason"]) == ("connect_boot_cable", "barge_in")
     assert run(r.watch_boot_current())["error"] == "power_step_required"
 
 

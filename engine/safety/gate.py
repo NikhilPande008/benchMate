@@ -2,22 +2,21 @@
 
 The voice model never tells anyone to connect power. It calls request_power_step(step); this
 checks the latest camera-read supply and returns either the exact sentence to say (English and
-Hindi) or the first reason to block, with the value to set. An approval is single-use, expires,
-and is cancelled by a barge-in.
+Hindi) or the first reason to block, with the value to set. How long an approval lasts is in
+engine/safety/approval.py.
 """
 from __future__ import annotations
 
-import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
+from engine.safety.approval import APPROVAL_TTL_S, Approval, Approvals  # noqa: F401  (re-exported)
 from mcp_evidence.packs.schema import Pack
 from mcp_evidence.schema import EvidenceRecord, utcnow
 
 STALE_S = 20.0  # a supply reading must be younger than this
 MIN_CONFIDENCE = 0.9  # for both the voltage and the current limit
-APPROVAL_TTL_S = 60.0
 
 PowerStep = Literal["connect_boot_cable", "press_power_key", "connect_port_supply"]
 Battery = Literal["unknown", "removed", "connected"]
@@ -112,37 +111,3 @@ def check_power(
             current_limit=sp.current_limit_target,
         )
     return GateResult(True, step, None, dict(APPROVED[step]))
-
-
-@dataclass
-class Approval:
-    id: str
-    step: str
-    at: datetime
-
-
-@dataclass
-class Approvals:
-    """At most one pending approval. A measurement that needs power consumes it; a barge-in
-    while it is pending cancels it, so the step must be requested and checked again."""
-
-    pending: Approval | None = None
-    ttl_s: float = APPROVAL_TTL_S
-
-    def grant(self, step: str, now: datetime | None = None) -> Approval:
-        self.pending = Approval(f"pw_{secrets.token_hex(3)}", step, now or utcnow())
-        return self.pending
-
-    def valid(self, step: str, now: datetime | None = None) -> bool:
-        p = self.pending
-        return bool(p and p.step == step and ((now or utcnow()) - p.at).total_seconds() < self.ttl_s)
-
-    def consume(self, step: str, now: datetime | None = None) -> bool:
-        if not self.valid(step, now):
-            return False
-        self.pending = None
-        return True
-
-    def cancel(self) -> Approval | None:
-        cancelled, self.pending = self.pending, None
-        return cancelled

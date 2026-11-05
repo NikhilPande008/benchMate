@@ -104,6 +104,16 @@ export class EngineSocket {
     this.send({ type: 'event', name: 'barge_in' });
   }
 
+  /** The output guardrail stopped a power instruction that had no gate approval (rule 2 backstop). */
+  safetyViolation(kind: string, text: string, itemId?: string): void {
+    this.send({ type: 'event', name: 'safety_violation', kind, text: text.slice(0, 300), item_id: itemId });
+  }
+
+  /** The screen's reply-language toggle: sets the session language (the engine tells the model). */
+  setLanguage(lang: 'hi' | 'en'): void {
+    this.send({ type: 'lang', lang });
+  }
+
   /** Dev controls: switch the fake bench scenario. */
   devScenario(scenario: string): void {
     this.send({ type: 'dev', scenario });

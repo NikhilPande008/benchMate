@@ -1,6 +1,9 @@
 """Build per-line clips and a manifest for the turn-driven harness (run_experiments.py).
 
-    uv run python eval/latency_script/make_clips.py synthetic   # macOS `say`, from lines.json
+    uv run python eval/latency_script/make_clips.py synthetic   # macOS `say`, from lines.json (alternating languages)
+    uv run python eval/latency_script/make_clips.py en          # single-language sets from lines_single.json:
+    uv run python eval/latency_script/make_clips.py hinglish    #   en, hinglish, hi (one language per session)
+    uv run python eval/latency_script/make_clips.py hi
     uv run python eval/latency_script/make_clips.py real        # your recordings in eval/intent_set/real/
 
 Each manifest entry has the speech start and end inside the clip, measured from the samples,
@@ -81,15 +84,29 @@ def speech_profile(samples: array.array, threshold: float | None = None, min_gap
     }
 
 
-def build_synthetic() -> list[dict]:
-    spec = json.loads((HERE / "lines.json").read_text())
-    out_dir = AUDIO / "synthetic"
+SINGLE_LANGUAGE_SETS = ("en", "hinglish", "hi")
+OTHER_SETS = ("redteam",)  # mixed-language lines that try to get a power instruction without the gate
+
+
+def synthetic_lines(which: str) -> tuple[list[dict], int]:
+    """(lines, default pause ms) of a synthetic set: the alternating lines.json, or one of the
+    single-language sets in lines_single.json (every line takes the set's language)."""
+    if which == "synthetic":
+        spec = json.loads((HERE / "lines.json").read_text())
+        return spec["lines"], spec["default_pause_ms"]
+    spec = json.loads((HERE / "lines_single.json").read_text())
+    return [{"lang": which, **line} for line in spec["sets"][which]], spec["default_pause_ms"]
+
+
+def build_synthetic(which: str = "synthetic") -> list[dict]:
+    lines, default_pause_ms = synthetic_lines(which)
+    out_dir = AUDIO / which
     out_dir.mkdir(parents=True, exist_ok=True)
     entries = []
     with tempfile.TemporaryDirectory() as tmp:
-        for line in spec["lines"]:
+        for line in lines:
             parts = [p.strip() for p in line["text"].split("|")]
-            pause = line.get("pause_ms", spec["default_pause_ms"]) if len(parts) > 1 else 0
+            pause = line.get("pause_ms", default_pause_ms) if len(parts) > 1 else 0
             clip = array.array("h", bytes(2 * RATE // 10))  # 100 ms lead-in
             for k, part in enumerate(parts):
                 tmp_wav = Path(tmp) / f"{line['id']}_{k}.wav"
@@ -104,7 +121,7 @@ def build_synthetic() -> list[dict]:
             entries.append(
                 {
                     "id": line["id"],
-                    "set": "synthetic",
+                    "set": which,
                     "kind": line["kind"],
                     "lang": line["lang"],
                     "text": line["text"].replace(" | ", " "),
@@ -161,7 +178,9 @@ def build_real() -> list[dict]:
 
 def main() -> None:
     which = sys.argv[1] if len(sys.argv) > 1 else "synthetic"
-    entries = build_synthetic() if which == "synthetic" else build_real()
+    if which not in ("synthetic", "real", *SINGLE_LANGUAGE_SETS, *OTHER_SETS):
+        raise SystemExit(f"set must be synthetic, real or one of {SINGLE_LANGUAGE_SETS + OTHER_SETS}")
+    entries = build_real() if which == "real" else build_synthetic(which)
     (AUDIO / which).mkdir(parents=True, exist_ok=True)
     (AUDIO / which / "manifest.json").write_text(json.dumps({"set": which, "lines": entries}, indent=1, ensure_ascii=False))
     kinds = {k: sum(1 for e in entries if e["kind"] == k) for k in ("plain", "tool")}

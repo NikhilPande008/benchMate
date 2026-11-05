@@ -1,14 +1,13 @@
-"""Session language (drives the preamble clip): set by the first tagged turn, switched only after
-two consecutive turns in the other language; Hindi and Hinglish count as one."""
+"""Session language: set from the first two clear turns (mixed → Hinglish), then changed only by the
+screen toggle or two consecutive clear turns in the other language; sent to the model as a note."""
 from __future__ import annotations
 
 import asyncio
 
 import pytest
 
-from engine.session.language import SessionLanguage, group
+from engine.session.language import NOTE, SessionLanguage, clear_language, group
 from engine.session.repair import RepairSession
-from engine.telemetry import lang_tag
 from mcp_evidence.fake_bench import FakeBench
 
 
@@ -17,67 +16,105 @@ def test_group(tag, expected):
     assert group(tag) == expected
 
 
-def feed(tags, start=None):
-    s = SessionLanguage(start)
-    changes = [s.observe(t) for t in tags]
-    return s.lang, changes
+@pytest.mark.parametrize(
+    "text,clear",
+    [
+        ("read the meter please", "en"),
+        ("meter padho, kitna dikha raha hai", "hi"),
+        ("मीटर पढ़ो", "hi"),  # Devanagari is clear even when short
+        ("हाँ", "hi"),
+        ("ok", None),  # too short to say anything
+        ("yes", None),
+        ("haan ji", None),
+        ("Yes, that's right.", "en"),
+        ("Haan, sahi hai.", "hi"),
+        ("", None),
+    ],
+)
+def test_clear_language(text, clear):
+    assert clear_language(text) == clear
 
 
-def test_default_is_english_until_a_tagged_turn():
-    assert SessionLanguage().lang == "en"
-    assert feed(["unknown", None]) == ("en", [False, False])
+def feed(turns: list[str | None], start: SessionLanguage | None = None) -> tuple[str, list[bool], SessionLanguage]:
+    s = start or SessionLanguage()
+    changes = [s.observe(t) for t in turns]
+    return s.lang, changes, s
 
 
-def test_first_tagged_turn_sets_the_language():
-    assert feed(["hinglish"]) == ("hi", [True])
-    assert feed(["unknown", "en"]) == ("en", [False, True])
+def test_english_until_a_clear_turn():
+    lang, changes, s = feed([None, None])
+    assert (lang, changes, s.main, s.decided) == ("en", [False, False], None, False)
 
 
 @pytest.mark.parametrize(
-    "tags,lang,changes",
+    "turns,lang,changes",
     [
-        (["hi", "en"], "hi", [True, False]),  # one English turn: stays Hindi
-        (["hi", "en", "en"], "en", [True, False, True]),  # two in a row: switches
-        (["hi", "en", "hi", "en"], "hi", [True, False, False, False]),  # interrupted streak resets
-        (["hi", "en", "unknown", "en"], "en", [True, False, False, True]),  # untagged turns don't break a streak
-        (["en", "hinglish", "hi"], "hi", [True, False, True]),  # Hinglish and Hindi count together
-        (["hi", "hinglish", "en", "hi", "en", "en"], "en", [True, False, False, False, False, True]),
-        (["en", "hi", "hi", "en", "en"], "en", [True, False, True, False, True]),
+        (["hi"], "hi", [True]),  # provisional
+        (["hi", "hi"], "hi", [True, False]),  # decided
+        (["en", "en"], "en", [True, False]),
+        (["en", "hi"], "hi", [True, True]),  # mixed first turns: Hinglish
+        (["hi", "en"], "hi", [True, False]),
+        (["en", None, "en"], "en", [True, False, False]),  # unclear turns don't count
     ],
 )
-def test_switch_only_after_two_consecutive_turns_in_the_other_language(tags, lang, changes):
-    assert feed(tags) == (lang, changes)
+def test_the_first_two_clear_turns_set_the_language(turns, lang, changes):
+    got, ch, s = feed(turns)
+    assert (got, ch) == (lang, changes)
+    assert s.decided == (sum(t is not None for t in turns) >= 2)
 
 
-def test_switch_after_is_configurable():
-    s = SessionLanguage(switch_after=3)
-    for t in ["hi", "en", "en"]:
-        s.observe(t)
-    assert s.lang == "hi"
+@pytest.mark.parametrize(
+    "turns,lang,changes",
+    [
+        (["hi", "hi", "en"], "hi", [True, False, False]),  # one English turn: stays
+        (["hi", "hi", "en", "en"], "en", [True, False, False, True]),  # two in a row: switches
+        (["hi", "hi", "en", "hi", "en"], "hi", [True, False, False, False, False]),  # interrupted streak
+        (["hi", "hi", "en", None, "en"], "en", [True, False, False, False, True]),  # unclear turns don't break it
+        (["en", "en", "hi", "hi", "en", "en"], "en", [True, False, False, True, False, True]),
+    ],
+)
+def test_after_deciding_only_two_consecutive_turns_switch(turns, lang, changes):
+    got, ch, _ = feed(turns)
+    assert (got, ch) == (lang, changes)
+
+
+def test_the_toggle_sets_and_decides():
+    s = SessionLanguage()
+    assert s.toggle("hi") is True and s.decided and s.source == "toggle"
+    assert s.toggle("hi") is False
+    assert s.observe("en") is False and s.lang == "hi"  # a first English turn doesn't undo the toggle
     s.observe("en")
-    assert s.lang == "en"
+    assert s.lang == "en" and s.source == "turns"  # two in a row still switch
+    with pytest.raises(ValueError):
+        s.toggle("fr")
 
 
-@pytest.mark.parametrize(
-    "text,tag",
-    [
-        ("read the meter", "en"),
-        ("मीटर पढ़ो", "hi"),
-        ("meter padho, kitna dikha raha hai", "hinglish"),
-    ],
-)
-def test_transcript_tags_feed_the_rule(text, tag):
-    assert lang_tag(text) == tag
+def test_repair_session_sends_a_note_only_when_the_language_changes():
+    notes: list[dict] = []
 
+    async def inject(msg):
+        notes.append(msg)
 
-def test_repair_session_emits_session_lang_only_on_change():
-    r = RepairSession("se_l", FakeBench(time_scale=0))
+    r = RepairSession("se_l", FakeBench(time_scale=0), inject=inject)
 
     async def turns():
-        for text in ["read the meter", "meter padho", "ok", "kitna dikha raha hai", "supply padho"]:
-            await r.on_user_transcript(text, lang_tag(text))
+        for text in ["read the meter please", "meter padho, kitna dikha raha hai", "ok", "supply kitna dikha raha hai",
+                     "what is the reading now", "and the supply please"]:
+            await r.on_user_transcript(text, None)
+        await r.set_language("hi")
+        await r.set_language("hi")
 
     asyncio.run(turns())
     langs = [e["lang"] for e in r.events if e["event"] == "session.lang"]
-    assert langs == ["en", "hi"]
-    assert r.lng == "hi"
+    assert langs == ["en", "hi", "en", "hi"]  # provisional en; mixed → hi; two English → en; toggle → hi
+    assert [n["text"] for n in notes] == [f"[engine] {NOTE[l]}" for l in langs]
+    assert all(n["urgent"] is False for n in notes)
+    assert [e for e in r.events if e["event"] == "session.lang"][-1]["source"] == "toggle"
+
+
+def test_the_session_language_survives_a_restart():
+    r = RepairSession("se_l", FakeBench(time_scale=0))
+    asyncio.run(r.on_user_transcript("meter padho, kitna dikha raha hai", None))
+    asyncio.run(r.on_user_transcript("supply bhi padho na", None))
+    restored = RepairSession.restore(r.state_dict(), [], FakeBench(time_scale=0))
+    assert (restored.lng, restored.lang.decided) == ("hi", True)

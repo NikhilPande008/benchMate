@@ -107,3 +107,22 @@ def test_tool_spans_carry_args_and_the_one_line_output(client, settings):
     spans = {s.name: json.loads(s.attrs) for s in load_spans(make_engine(settings.db_path), "run-dev", ["se_dev6"]) if s.name.startswith("tool_")}
     assert spans["tool_started"]["args"] == '{"topic":"diode_mode"}'
     assert json.loads(spans["tool_finished"]["output"]) == out
+
+
+def test_cost_endpoint_prices_recorded_usage(client):
+    from engine.telemetry.cost import response_cost
+
+    sid = client.post("/realtime/client-secret", json={"run_id": "run-cost-1", "use_pool": False}).json()["session_id"]
+    usage = {"in_text_tokens": 1500, "in_cached_text_tokens": 1000, "out_audio_tokens": 120, "out_text_tokens": 30}
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "hello", "session_id": sid, "run_id": "run-cost-1"})
+        ws.receive_json()
+        ws.send_json({"type": "spans", "spans": [
+            {"name": "line_start", "t_ms": 1.0, "attrs": {"id": "t01", "clip_ms": 0}},
+            {"name": "response_done", "t_ms": 2.0, "attrs": usage},
+        ]})
+        _tool(ws, "c1", "explain", {"topic": "vbat"})  # a round trip: the spans were received
+    data = client.get("/dev/cost?run=run-cost").json()
+    assert data["responses"] == 1 and data["lines"] == 1
+    assert data["usd"] == round(response_cost("gpt-realtime-2.1-mini", usage), 4)
+    assert client.get("/dev/cost?run=ru").status_code == 400
