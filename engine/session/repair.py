@@ -7,6 +7,7 @@ Fine-grained operations (classification, read-back, approvals, watchdog) stay in
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,17 @@ OBSERVATION_WORDS = {
     "ic_hot": {"en": "IC hot", "hi": "IC garam"},
 }
 SYMPTOM_WORDS = {"not_charging": ["charg", "चार्ज"]}
+VIEW_PROBLEMS = {  # BUILD_GUIDE corner cases: a hand or probe over the display; a dying meter battery
+    "view_blocked": {"ask": "clear_view", "en": "Something is covering the meter display; please move it out of the way.",
+                     "hi": "Meter display ke aage kuch aa raha hai; please hata do."},
+    "meter_blank": {"ask": "check_meter_battery", "en": "The meter display is blank or very dim; please check the meter battery.",
+                    "hi": "Meter ka display khaali ya bahut dhundhla hai; meter ki battery check karo."},
+}
+VISION_NOTE = {
+    "full": "Camera readings are back to normal.",
+    "reader_b_only": "Camera reading limited: only the local reader works. Camera values now come back as a read-back; confirm each with the user before going on.",
+    "spoken_only": "The camera can't read the displays. Ask the user to read each value aloud and use record_spoken_reading.",
+}
 
 
 def _fits(m: Measurement, text: str | None) -> bool:
@@ -499,11 +511,21 @@ class RepairSession:
                 return {"error": "unknown_point", "point": pid}
             pid = asked.point_id
         m = self.pack.measurement_for_point(pid) if (self.pack and pid) else None
-        rec = await self._timed(self.bench.read_meter(self.session_id, pid, None))
+        want = self.pack.point(pid).mode if (self.pack and pid) else None
+        rec = await self._timed(self.bench.read_meter(self.session_id, pid, want))
         self._camera(rec)
         mid = m.id if m else None
         if isinstance(rec, EvidenceError):
+            if rec.error == "mode_mismatch":
+                return self._wrong_mode(rec, want)
+            if rec.error == "unreadable" and rec.message in VIEW_PROBLEMS:
+                self._event("reading.view", problem=rec.message, measurement=mid)
+                return {"error": rec.message, "ask": VIEW_PROBLEMS[rec.message]["ask"], "say": VIEW_PROBLEMS[rec.message][self.lng]}
             return self._read_aloud(mid, rec.error)
+        near = self._near_threshold(pid, rec)
+        if rec.legible and rec.value is not None or rec.open:
+            if rec.legible and (rec.needs_confirmation or near):
+                return self._camera_readback(rec, m, pid, "reader_b_only" if rec.needs_confirmation else "near_threshold")
         if rec.confidence < CAMERA_MIN_CONFIDENCE or not rec.legible:
             self._store(rec, None)  # kept for the log, never for the ledger
             return self._read_aloud(mid, "unclear", conf=round(rec.confidence, 2))
@@ -516,6 +538,45 @@ class RepairSession:
         if rec.outcome:
             out["class"] = rec.outcome
         return out | self._ledger_line(snap, rec)
+
+    def _wrong_mode(self, err: EvidenceError, want: str | None) -> dict[str, Any]:
+        """The meter's mode icon doesn't match the point's mode (BUILD_GUIDE corner case)."""
+        try:
+            on = json.loads(err.message).get("on")
+        except ValueError:
+            on = None
+        words = {"diode": "diode mode", "dcv": "volts", "ohm": "ohms", "current": "amps"}
+        say = {"en": f"Your meter is on {words.get(on, on or 'another mode')}; switch it to {words.get(want, want)}.",
+               "hi": f"Meter abhi {words.get(on, on or 'dusre mode')} pe hai; {words.get(want, want)} pe karo."}[self.lng]
+        self._event("reading.wrong_mode", on=on, want=want)
+        return {"error": "wrong_mode", "meter_on": on, "set": want, "say": say}
+
+    NEAR_THRESHOLD = 0.05  # within 5% of a band edge: a decimal or last-digit slip changes the class
+
+    def _near_threshold(self, pid: str | None, rec: EvidenceRecord) -> bool:
+        if not (self.pack and pid) or rec.open or rec.value is None:
+            return False
+        edges = {e for b in self.pack.point(pid).reference.bands for e in (b.lo, b.hi) if e}
+        return any(abs(rec.value - e) <= self.NEAR_THRESHOLD * abs(e) for e in edges)
+
+    def _camera_readback(self, rec: EvidenceRecord, m: Measurement | None, pid: str | None, why: str) -> dict[str, Any]:
+        """A camera value that must be confirmed before it counts: read back from the local reader
+        only (the user is the second reader, rule 3), or near a class boundary."""
+        rec.measurement_id = m.id if m else None
+        rec.needs_confirmation = True
+        unit = {"diode_V": "volt", "V": "volt", "ohm": "ohm", "A": "amp"}.get(rec.unit or "", "")
+        r = parse("OL" if rec.open else f"{rec.value} {unit}")
+        say = readback(r) if r.ok else ("OL" if rec.open else str(rec.value))
+        if pid and self.pack:
+            say = f"{say}, {getattr(self.pack.point(pid).label, self.lng).split(',')[0]}"
+        self.readback_pending = Readback(rec, rec.measurement_id, say)
+        self._event("readback", measurement=rec.measurement_id, say=say, source="camera", why=why)
+        return {"status": "readback", "say": say, "point": pid or rec.measurement_id, "conf": round(rec.confidence, 2), "ask": "confirm"}
+
+    async def on_vision_level(self, level: str, reason: str | None) -> None:
+        """The evidence server's degradation ladder changed (full → Reader B only → spoken only)."""
+        self._event("vision.level", level=level, reason=reason)
+        await self.note(VISION_NOTE.get(level, VISION_NOTE["full"]))
 
     async def watch_boot_current(self, trigger: str = "on_connect") -> dict[str, Any]:
         if err := self._require_repair():
@@ -630,7 +691,7 @@ class RepairSession:
         if m and m.requires_power and not self._consume(m.requires_power):
             return {"error": "power_step_required", "step": m.requires_power}
         rec = rb.record
-        rec.confidence, rec.confirmed, rec.needs_confirmation = CONFIRMED_CONFIDENCE, True, False
+        rec.confidence, rec.confirmed, rec.needs_confirmation = max(rec.confidence, CONFIRMED_CONFIDENCE), True, False
         if m and m.kind == "point" and m.point_id:
             rec.outcome = classify_band(self.pack.point(m.point_id).reference.bands, rec.value, rec.open)
         elif m and m.kind == "port_current":

@@ -36,6 +36,7 @@ class Style:
     glyph_style: int  # which 6/7/9 variant
     leading_zero: bool
     glow: float  # LED halo strength
+    family: str = "upright"
 
 
 @dataclass
@@ -61,7 +62,20 @@ class Rendered:
     cells: dict[str, list[np.ndarray]] = field(default_factory=dict)  # field → 4×2 corners per digit cell
 
 
-def random_style(rng: np.random.Generator, kind: str) -> Style:
+# Digit-style families. Two are held out from all Reader B tuning (eval/display_set/README.md).
+FAMILIES: dict[str, dict[str, tuple[float, float]]] = {
+    "upright": {"slant": (0.0, 0.03), "thickness": (0.11, 0.15), "aspect": (0.50, 0.60)},
+    "italic": {"slant": (0.08, 0.15), "thickness": (0.11, 0.15), "aspect": (0.50, 0.60)},
+    "thin": {"slant": (0.0, 0.10), "thickness": (0.07, 0.10), "aspect": (0.50, 0.60)},
+    "bold": {"slant": (0.0, 0.10), "thickness": (0.16, 0.20), "aspect": (0.52, 0.62)},
+    "narrow": {"slant": (0.0, 0.10), "thickness": (0.11, 0.15), "aspect": (0.40, 0.47)},
+    "wide": {"slant": (0.0, 0.10), "thickness": (0.11, 0.15), "aspect": (0.62, 0.72)},
+}
+
+
+def random_style(rng: np.random.Generator, kind: str, family: str | None = None) -> Style:
+    family = family or str(rng.choice(sorted(FAMILIES)))
+    fam = FAMILIES[family]
     if kind == "lcd":
         g = rng.uniform(150, 215)
         bg = (g * rng.uniform(0.9, 1.0), g * rng.uniform(0.98, 1.05), g * rng.uniform(0.92, 1.02))
@@ -76,9 +90,9 @@ def random_style(rng: np.random.Generator, kind: str) -> Style:
     return Style(
         kind=kind,
         digit_h=rng.uniform(52, 78),
-        aspect=rng.uniform(0.48, 0.62),
-        thickness=rng.uniform(0.10, 0.17),
-        slant=rng.uniform(0.0, 0.14),
+        aspect=rng.uniform(*fam["aspect"]),
+        thickness=rng.uniform(*fam["thickness"]),
+        slant=rng.uniform(*fam["slant"]),
         gap=rng.uniform(0.008, 0.03),
         spacing=rng.uniform(0.25, 0.5),
         bg=bg,  # type: ignore[arg-type]
@@ -87,6 +101,7 @@ def random_style(rng: np.random.Generator, kind: str) -> Style:
         glyph_style=int(rng.integers(0, 2)),
         leading_zero=bool(rng.random() < 0.7),
         glow=glow,
+        family=family,
     )
 
 

@@ -18,12 +18,21 @@ import numpy as np
 
 from . import distort
 from .displays import LED_COLORS, SUPPLY_FIELDS, FieldSpec, MeterReading, Rendered, Style, random_style, render_meter, render_supply
-from .segments import Cell, layout, lit_segments
+from .segments import Cell, layout, lit_segments, segment_polygons
 
 DISTORTIONS = ("clean", "perspective", "blur", "glare", "low_contrast", "flicker", "mid_update", "hand", "dim_lcd", "noise")
 FRAME_MS = (0, 150, 300)
+# Held out from all Reader B tuning: these distortions and these digit-style families. Tuning looks
+# only at split "tune"; the other splits are run once, on the frozen reader, and reported apart.
+HELDOUT_DISTORTIONS = ("glare", "low_contrast", "noise", "mid_update")
+HELDOUT_FAMILIES = ("bold", "narrow")
+
+
+def split_of(distortion: str, family: str) -> str:
+    d, f = distortion in HELDOUT_DISTORTIONS, family in HELDOUT_FAMILIES
+    return "heldout_both" if d and f else "heldout_distortion" if d else "heldout_style" if f else "tune"
 DIM_READABLE = 0.25  # lit minus ghost ink below this: a person can't tell lit from unlit segments
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 
 
 @dataclass
@@ -51,6 +60,8 @@ class Sample:
     style: Style
     jpeg_quality: int = 90
     notes: list[str] = field(default_factory=list)
+    segments: dict[str, list[list[str]]] = field(default_factory=dict)  # field → frame → cell: lit segments, "." = DP
+    hidden: dict[str, list[str]] = field(default_factory=dict)  # field → cell: segments under a hand or glare
 
     def label(self, frame_files: list[str]) -> dict:
         r2 = lambda a: np.round(np.asarray(a, dtype=float), 2).tolist()  # noqa: E731
@@ -59,6 +70,7 @@ class Sample:
             "synthetic": True,
             "display": self.display,
             "distortion": self.distortion,
+            "split": split_of(self.distortion, self.style.family),
             "severity": round(self.severity, 3),
             "frames": frame_files,
             "frame_ms": list(FRAME_MS),
@@ -70,8 +82,10 @@ class Sample:
             **self.extra,
             "readable": self.readable,
             "frame_truth": self.frame_truth,
+            "segments": self.segments,
+            "hidden": self.hidden,
             "style": {k: (round(v, 3) if isinstance(v, float) else v) for k, v in asdict(self.style).items() if k in
-                      ("kind", "digit_h", "slant", "thickness", "ghost", "glyph_style", "leading_zero")},
+                      ("kind", "family", "digit_h", "aspect", "slant", "thickness", "ghost", "glyph_style", "leading_zero")},
             "jpeg_quality": self.jpeg_quality,
             "notes": self.notes,
         }
@@ -226,6 +240,25 @@ def _cell_fraction(mask: np.ndarray, quad: np.ndarray) -> float:
     return float((mask & (m > 0)).sum() / area) if area else 0.0
 
 
+def _lit_strings(spec: FieldSpec, st: Style) -> list[str]:
+    lit, dps = spec.resolved(st.glyph_style)
+    return ["".join(sorted(k for k, v in d.items() if v >= 0.5)) + ("." if dp >= 0.5 else "") for d, dp in zip(lit, dps)]
+
+
+def _hidden(mask: np.ndarray, cells: list[np.ndarray], st: Style, scale: float) -> list[str]:
+    """Segments more than 30% covered by the mask (a hand, or glare saturating the camera)."""
+    out = []
+    for q in cells:
+        cx, cy, cw, ch = q[3][0], q[0][1], q[2][0] - q[3][0], q[3][1] - q[0][1]
+        polys = segment_polygons(cx, cy, cw, ch, st.thickness * ch, st.slant, st.gap * ch)
+        r = st.thickness * ch * 0.55
+        dp_c = (cx + cw + cw * st.spacing * 0.5, cy + ch - r)
+        dp_poly = np.array([(dp_c[0] + r * np.cos(a), dp_c[1] + r * np.sin(a)) for a in np.linspace(0, 2 * np.pi, 12)], np.float32)
+        hid = [k for k, pts in {**polys, ".": dp_poly}.items() if _cell_fraction(mask, pts) > 0.3]
+        out.append("".join(sorted(hid)))
+    return out
+
+
 def make_sample(seed: int, index: int, display: str | None = None, distortion: str | None = None) -> Sample:
     rng = np.random.default_rng([seed, index])
     distortion = distortion or DISTORTIONS[index % len(DISTORTIONS)]
@@ -316,6 +349,14 @@ def make_sample(seed: int, index: int, display: str | None = None, distortion: s
                     _, f, j = k.split(":")
                     cells.setdefault(f, []).append(v)
 
+    seg_truth = {f: [_lit_strings(fs[f], st) for fs in frame_specs] for f in truth}
+    hidden: dict[str, list[str]] = {}
+    if distortion in ("hand", "glare"):
+        flat_cells = {f: v for f, v in cells.items()}  # no perspective in these samples: flat = image
+        mask = occl if distortion == "hand" else (frames[0].max(axis=2) >= 250)
+        if mask is not None:
+            hidden = {f: _hidden(mask, cs, st, 1.0) for f, cs in flat_cells.items()}
+
     readable = {k: True for k in truth}
     for f, cs in cells.items():
         lit_cells = [c for c, cell in zip(cs, specs[f].cells) if cell.ch != " "] or cs
@@ -332,7 +373,7 @@ def make_sample(seed: int, index: int, display: str | None = None, distortion: s
             readable[f] = False  # lit segments barely darker than unlit ones: an 8 and a 4 look alike
 
     return Sample(f"s{index:05d}", display, distortion, severity, frames, truth, out_extra, glass, fields, cells,
-                  readable, frame_truth, st, pq, notes)
+                  readable, frame_truth, st, pq, notes, seg_truth, hidden)
 
 
 def write_dataset(out: Path, samples: int, seed: int) -> dict:
@@ -351,7 +392,10 @@ def write_dataset(out: Path, samples: int, seed: int) -> dict:
             fh.write(json.dumps(s.label(files), ensure_ascii=False) + "\n")
             key = f"{s.display}/{s.distortion}"
             counts[key] = counts.get(key, 0) + 1
+            sp = split_of(s.distortion, s.style.family)
+            counts[f"split/{sp}"] = counts.get(f"split/{sp}", 0) + 1
     meta = {"synthetic": True, "generator_version": GENERATOR_VERSION, "seed": seed, "samples": samples,
+            "heldout_distortions": list(HELDOUT_DISTORTIONS), "heldout_families": list(HELDOUT_FAMILIES),
             "images": samples * len(FRAME_MS), "frame_ms": list(FRAME_MS), "counts": dict(sorted(counts.items())),
             "note": "Synthetic stand-ins for the real supply and meter displays. Not a measure of real-world accuracy."}
     (out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")

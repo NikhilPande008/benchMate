@@ -41,3 +41,8 @@ eval/scenarios/audio/
 eval/scenarios/runs/
 # Synthetic display images (regenerate with: uv run python -m mcp_evidence.synth)
 eval/display_set/synthetic/
+# Real phone photos (EXIF may hold GPS): only the README and labels are tracked
+eval/display_set/real_misc/*
+!eval/display_set/real_misc/README.md
+!eval/display_set/real_misc/labels.csv
+!eval/display_set/real_misc/labels.jsonl

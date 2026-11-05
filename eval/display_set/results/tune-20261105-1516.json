@@ -1,0 +1,551 @@
+{
+ "split": "tune",
+ "synthetic": true,
+ "reader_b_sha": "8d0f53dfe8328658",
+ "generator_version": 2,
+ "run_at": "2026-11-05T09:46:51+00:00",
+ "fixture_rates": {
+  "wrong_dp": 0.08,
+  "wrong_digit": 0.05,
+  "illegible": 0.05,
+  "slow": 0.04,
+  "timeout": 0.02,
+  "error": 0.01
+ },
+ "runs": {
+  "tune/jitter0": {
+   "samples": 287,
+   "seconds": 21.5,
+   "reader_b": {
+    "total": {
+     "n": 1279,
+     "correct": 1193,
+     "wrong": 7,
+     "illegible": 79,
+     "unreadable_n": 210,
+     "unreadable_illegible": 195,
+     "unreadable_read": 15,
+     "acc": 0.9328,
+     "wrong_rate": 0.0055
+    },
+    "by_distortion": {
+     "blur": {
+      "n": 294,
+      "correct": 237,
+      "wrong": 5,
+      "illegible": 52,
+      "unreadable_n": 24,
+      "unreadable_illegible": 12,
+      "unreadable_read": 12,
+      "acc": 0.806,
+      "wrong_rate": 0.017,
+      "ms_p50": 8.1,
+      "ms_p95": 8.7
+     },
+     "clean": {
+      "n": 282,
+      "correct": 279,
+      "wrong": 0,
+      "illegible": 3,
+      "unreadable_n": 0,
+      "unreadable_illegible": 0,
+      "unreadable_read": 0,
+      "acc": 0.989,
+      "wrong_rate": 0.0,
+      "ms_p50": 8.1,
+      "ms_p95": 8.6
+     },
+     "dim_lcd": {
+      "n": 150,
+      "correct": 147,
+      "wrong": 0,
+      "illegible": 3,
+      "unreadable_n": 3,
+      "unreadable_illegible": 0,
+      "unreadable_read": 3,
+      "acc": 0.98,
+      "wrong_rate": 0.0,
+      "ms_p50": 8.3,
+      "ms_p95": 8.7
+     },
+     "flicker": {
+      "n": 196,
+      "correct": 196,
+      "wrong": 0,
+      "illegible": 0,
+      "unreadable_n": 0,
+      "unreadable_illegible": 0,
+      "unreadable_read": 0,
+      "acc": 1.0,
+      "wrong_rate": 0.0,
+      "ms_p50": 8.2,
+      "ms_p95": 8.7
+     },
+     "hand": {
+      "n": 78,
+      "correct": 66,
+      "wrong": 2,
+      "illegible": 10,
+      "unreadable_n": 183,
+      "unreadable_illegible": 183,
+      "unreadable_read": 0,
+      "acc": 0.846,
+      "wrong_rate": 0.026,
+      "ms_p50": 1.6,
+      "ms_p95": 8.4
+     },
+     "perspective": {
+      "n": 279,
+      "correct": 268,
+      "wrong": 0,
+      "illegible": 11,
+      "unreadable_n": 0,
+      "unreadable_illegible": 0,
+      "unreadable_read": 0,
+      "acc": 0.961,
+      "wrong_rate": 0.0,
+      "ms_p50": 8.1,
+      "ms_p95": 8.7
+     }
+    }
+   },
+   "segment_calibration": {
+    "n": 38006,
+    "ece": 0.0056,
+    "bins": [
+     {
+      "bin": "0.50-0.60",
+      "n": 283,
+      "mean_conf": 0.57,
+      "accuracy": 0.707
+     },
+     {
+      "bin": "0.60-0.70",
+      "n": 114,
+      "mean_conf": 0.649,
+      "accuracy": 0.491
+     },
+     {
+      "bin": "0.70-0.80",
+      "n": 2991,
+      "mean_conf": 0.772,
+      "accuracy": 0.785
+     },
+     {
+      "bin": "0.80-0.90",
+      "n": 37,
+      "mean_conf": 0.855,
+      "accuracy": 0.432
+     },
+     {
+      "bin": "0.90-0.95",
+      "n": 80,
+      "mean_conf": 0.93,
+      "accuracy": 0.613
+     },
+     {
+      "bin": "0.95-0.99",
+      "n": 148,
+      "mean_conf": 0.971,
+      "accuracy": 0.736
+     },
+     {
+      "bin": "0.99-1.00",
+      "n": 34353,
+      "mean_conf": 1.0,
+      "accuracy": 0.999
+     }
+    ]
+   },
+   "reading_calibration": {
+    "n": 1200,
+    "ece": 0.0111,
+    "bins": [
+     {
+      "bin": "0.50-0.60",
+      "n": 5,
+      "mean_conf": 0.561,
+      "accuracy": 0.4
+     },
+     {
+      "bin": "0.60-0.70",
+      "n": 6,
+      "mean_conf": 0.634,
+      "accuracy": 0.667
+     },
+     {
+      "bin": "0.70-0.80",
+      "n": 13,
+      "mean_conf": 0.748,
+      "accuracy": 1.0
+     },
+     {
+      "bin": "0.80-0.90",
+      "n": 32,
+      "mean_conf": 0.855,
+      "accuracy": 1.0
+     },
+     {
+      "bin": "0.90-0.95",
+      "n": 19,
+      "mean_conf": 0.925,
+      "accuracy": 0.895
+     },
+     {
+      "bin": "0.95-0.99",
+      "n": 97,
+      "mean_conf": 0.981,
+      "accuracy": 1.0
+     },
+     {
+      "bin": "0.99-1.00",
+      "n": 1028,
+      "mean_conf": 0.998,
+      "accuracy": 1.0
+     }
+    ]
+   },
+   "agreement": {
+    "total": {
+     "fields": 529,
+     "accepted_correct": 376,
+     "accepted_wrong": 0,
+     "to_spoken": 153,
+     "unreadable": 70,
+     "unreadable_accepted_wrong": 0,
+     "a_calls": 376,
+     "hedged": 125
+    },
+    "by_distortion": {
+     "blur": {
+      "fields": 106,
+      "accepted_correct": 78,
+      "accepted_wrong": 0,
+      "to_spoken": 28,
+      "unreadable": 8,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 69,
+      "hedged": 26
+     },
+     "clean": {
+      "fields": 94,
+      "accepted_correct": 88,
+      "accepted_wrong": 0,
+      "to_spoken": 6,
+      "unreadable": 0,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 61,
+      "hedged": 25
+     },
+     "dim_lcd": {
+      "fields": 51,
+      "accepted_correct": 47,
+      "accepted_wrong": 0,
+      "to_spoken": 4,
+      "unreadable": 1,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 59,
+      "hedged": 16
+     },
+     "flicker": {
+      "fields": 98,
+      "accepted_correct": 61,
+      "accepted_wrong": 0,
+      "to_spoken": 37,
+      "unreadable": 0,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 74,
+      "hedged": 23
+     },
+     "hand": {
+      "fields": 87,
+      "accepted_correct": 17,
+      "accepted_wrong": 0,
+      "to_spoken": 70,
+      "unreadable": 61,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 53,
+      "hedged": 14
+     },
+     "perspective": {
+      "fields": 93,
+      "accepted_correct": 85,
+      "accepted_wrong": 0,
+      "to_spoken": 8,
+      "unreadable": 0,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 60,
+      "hedged": 21
+     }
+    }
+   }
+  },
+  "tune/jitter3": {
+   "samples": 287,
+   "seconds": 21.4,
+   "reader_b": {
+    "total": {
+     "n": 1279,
+     "correct": 1152,
+     "wrong": 16,
+     "illegible": 111,
+     "unreadable_n": 210,
+     "unreadable_illegible": 196,
+     "unreadable_read": 14,
+     "acc": 0.9007,
+     "wrong_rate": 0.0125
+    },
+    "by_distortion": {
+     "blur": {
+      "n": 294,
+      "correct": 223,
+      "wrong": 7,
+      "illegible": 64,
+      "unreadable_n": 24,
+      "unreadable_illegible": 13,
+      "unreadable_read": 11,
+      "acc": 0.759,
+      "wrong_rate": 0.024,
+      "ms_p50": 8.2,
+      "ms_p95": 8.7
+     },
+     "clean": {
+      "n": 282,
+      "correct": 270,
+      "wrong": 2,
+      "illegible": 10,
+      "unreadable_n": 0,
+      "unreadable_illegible": 0,
+      "unreadable_read": 0,
+      "acc": 0.957,
+      "wrong_rate": 0.007,
+      "ms_p50": 8.1,
+      "ms_p95": 8.6
+     },
+     "dim_lcd": {
+      "n": 150,
+      "correct": 145,
+      "wrong": 1,
+      "illegible": 4,
+      "unreadable_n": 3,
+      "unreadable_illegible": 0,
+      "unreadable_read": 3,
+      "acc": 0.967,
+      "wrong_rate": 0.007,
+      "ms_p50": 8.3,
+      "ms_p95": 8.7
+     },
+     "flicker": {
+      "n": 196,
+      "correct": 186,
+      "wrong": 1,
+      "illegible": 9,
+      "unreadable_n": 0,
+      "unreadable_illegible": 0,
+      "unreadable_read": 0,
+      "acc": 0.949,
+      "wrong_rate": 0.005,
+      "ms_p50": 8.2,
+      "ms_p95": 8.7
+     },
+     "hand": {
+      "n": 78,
+      "correct": 64,
+      "wrong": 3,
+      "illegible": 11,
+      "unreadable_n": 183,
+      "unreadable_illegible": 183,
+      "unreadable_read": 0,
+      "acc": 0.821,
+      "wrong_rate": 0.038,
+      "ms_p50": 1.6,
+      "ms_p95": 8.5
+     },
+     "perspective": {
+      "n": 279,
+      "correct": 264,
+      "wrong": 2,
+      "illegible": 13,
+      "unreadable_n": 0,
+      "unreadable_illegible": 0,
+      "unreadable_read": 0,
+      "acc": 0.946,
+      "wrong_rate": 0.007,
+      "ms_p50": 8.1,
+      "ms_p95": 8.7
+     }
+    }
+   },
+   "segment_calibration": {
+    "n": 37954,
+    "ece": 0.0062,
+    "bins": [
+     {
+      "bin": "0.50-0.60",
+      "n": 345,
+      "mean_conf": 0.563,
+      "accuracy": 0.774
+     },
+     {
+      "bin": "0.60-0.70",
+      "n": 187,
+      "mean_conf": 0.653,
+      "accuracy": 0.631
+     },
+     {
+      "bin": "0.70-0.80",
+      "n": 3753,
+      "mean_conf": 0.771,
+      "accuracy": 0.793
+     },
+     {
+      "bin": "0.80-0.90",
+      "n": 98,
+      "mean_conf": 0.859,
+      "accuracy": 0.776
+     },
+     {
+      "bin": "0.90-0.95",
+      "n": 99,
+      "mean_conf": 0.926,
+      "accuracy": 0.758
+     },
+     {
+      "bin": "0.95-0.99",
+      "n": 100,
+      "mean_conf": 0.972,
+      "accuracy": 0.86
+     },
+     {
+      "bin": "0.99-1.00",
+      "n": 33372,
+      "mean_conf": 1.0,
+      "accuracy": 0.999
+     }
+    ]
+   },
+   "reading_calibration": {
+    "n": 1168,
+    "ece": 0.0085,
+    "bins": [
+     {
+      "bin": "0.50-0.60",
+      "n": 9,
+      "mean_conf": 0.566,
+      "accuracy": 0.556
+     },
+     {
+      "bin": "0.60-0.70",
+      "n": 5,
+      "mean_conf": 0.642,
+      "accuracy": 0.4
+     },
+     {
+      "bin": "0.70-0.80",
+      "n": 12,
+      "mean_conf": 0.761,
+      "accuracy": 0.75
+     },
+     {
+      "bin": "0.80-0.90",
+      "n": 33,
+      "mean_conf": 0.859,
+      "accuracy": 1.0
+     },
+     {
+      "bin": "0.90-0.95",
+      "n": 22,
+      "mean_conf": 0.929,
+      "accuracy": 0.955
+     },
+     {
+      "bin": "0.95-0.99",
+      "n": 114,
+      "mean_conf": 0.98,
+      "accuracy": 0.991
+     },
+     {
+      "bin": "0.99-1.00",
+      "n": 973,
+      "mean_conf": 0.998,
+      "accuracy": 0.996
+     }
+    ]
+   },
+   "agreement": {
+    "total": {
+     "fields": 529,
+     "accepted_correct": 377,
+     "accepted_wrong": 0,
+     "to_spoken": 152,
+     "unreadable": 70,
+     "unreadable_accepted_wrong": 0,
+     "a_calls": 369,
+     "hedged": 117
+    },
+    "by_distortion": {
+     "blur": {
+      "fields": 106,
+      "accepted_correct": 76,
+      "accepted_wrong": 0,
+      "to_spoken": 30,
+      "unreadable": 8,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 68,
+      "hedged": 26
+     },
+     "clean": {
+      "fields": 94,
+      "accepted_correct": 87,
+      "accepted_wrong": 0,
+      "to_spoken": 7,
+      "unreadable": 0,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 62,
+      "hedged": 26
+     },
+     "dim_lcd": {
+      "fields": 51,
+      "accepted_correct": 46,
+      "accepted_wrong": 0,
+      "to_spoken": 5,
+      "unreadable": 1,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 63,
+      "hedged": 17
+     },
+     "flicker": {
+      "fields": 98,
+      "accepted_correct": 62,
+      "accepted_wrong": 0,
+      "to_spoken": 36,
+      "unreadable": 0,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 70,
+      "hedged": 16
+     },
+     "hand": {
+      "fields": 87,
+      "accepted_correct": 20,
+      "accepted_wrong": 0,
+      "to_spoken": 67,
+      "unreadable": 61,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 47,
+      "hedged": 13
+     },
+     "perspective": {
+      "fields": 93,
+      "accepted_correct": 86,
+      "accepted_wrong": 0,
+      "to_spoken": 7,
+      "unreadable": 0,
+      "unreadable_accepted_wrong": 0,
+      "a_calls": 59,
+      "hedged": 19
+     }
+    }
+   }
+  }
+ }
+}

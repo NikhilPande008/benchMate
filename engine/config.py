@@ -69,6 +69,16 @@ class Settings(BaseModel):
     vision_timeout_s: float = 4.0  # decided setting: hard timeout for a camera read
     fake_scenario: str = "short_battery_line"
     fake_time_scale: float = 1.0  # fake bench delays (supply read, meter read, boot watch); tests use 0
+    # "fake": the scripted fake bench answers directly. "vision": the same bench seen through the
+    # camera pipeline (rendered frames → calibration → Reader B + Reader A → agreement rule).
+    evidence: str = "fake"
+    # Reader A: "fixture" answers from the fake scene (no API calls); "openai" is the real call
+    # (disabled in Phase 3; docs/PENDING_RUNS.md).
+    reader_a: str = "fixture"
+    vision_model: str = "gpt-6-luna"
+    vision_detail: str = "high"
+    vision_hedge_s: float = 2.5  # decided setting: second request if Reader A hasn't answered
+    frames_dir: Path = REPO_ROOT / "frames"
     dev_endpoints: bool = True  # GET /dev/sessions/{id} (bound to 127.0.0.1 with the rest of the engine)
     tool_timeout_s: float = 6.0
     host: str = "127.0.0.1"
@@ -101,6 +111,9 @@ class Settings(BaseModel):
             vision_timeout_s=float(env.get("BENCHMATE_VISION_TIMEOUT_S", defaults.vision_timeout_s)),
             fake_scenario=env.get("BENCHMATE_FAKE_SCENARIO", defaults.fake_scenario),
             fake_time_scale=float(env.get("BENCHMATE_FAKE_TIME_SCALE", defaults.fake_time_scale)),
+            evidence=env.get("BENCHMATE_EVIDENCE", defaults.evidence),
+            reader_a=env.get("BENCHMATE_READER_A", defaults.reader_a),
+            vision_model=env.get("BENCHMATE_VISION_MODEL", defaults.vision_model),
             dev_endpoints=env.get("BENCHMATE_DEV_ENDPOINTS", "1") != "0",
             host=env.get("BENCHMATE_HOST", defaults.host),
             port=int(env.get("BENCHMATE_PORT", defaults.port)),

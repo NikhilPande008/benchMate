@@ -154,3 +154,30 @@ def test_a_very_dim_lcd_is_unreadable_when_lit_and_unlit_segments_look_alike():
         assert s.readable["main"] is (ink - s.style.ghost >= DIM_READABLE)
         assert s.extra["battery_low"] is True
     assert any(not s.readable["main"] for s in got) and any(s.readable["main"] for s in got)
+
+
+def test_splits_hold_out_distortions_and_style_families():
+    from mcp_evidence.synth.dataset import HELDOUT_DISTORTIONS, HELDOUT_FAMILIES, split_of
+
+    assert split_of("clean", "upright") == "tune"
+    assert split_of("glare", "upright") == "heldout_distortion"
+    assert split_of("clean", "bold") == "heldout_style"
+    assert split_of("noise", "narrow") == "heldout_both"
+    assert set(HELDOUT_DISTORTIONS) < set(DISTORTIONS) and len(HELDOUT_FAMILIES) == 2
+    labs = [make_sample(7, i).label([]) for i in range(40)]
+    assert {lab["split"] for lab in labs} >= {"tune", "heldout_distortion", "heldout_style"}
+    assert all(lab["split"] == split_of(lab["distortion"], lab["style"]["family"]) for lab in labs)
+
+
+def test_segment_truth_per_frame_and_hidden_segments():
+    s = make_sample(7, 2, "meter", "clean")
+    segs = s.segments["main"]
+    assert len(segs) == 3 and segs[0] == segs[1] == segs[2]
+    cells = layout(s.truth["main"].text if not s.truth["main"].ol else "OL ", 4)
+    for got, c in zip(segs[0], cells):
+        assert got.rstrip(".") == "".join(sorted(lit_segments(c.ch, s.style.glyph_style))) and got.endswith(".") == c.dp
+    f = make_sample(7, 2, "supply", "flicker")
+    k = f.frame_truth["set_voltage"].index("flicker")
+    assert any(f.segments[x][k] != f.segments[x][(k + 1) % 3] for x in f.segments)
+    h = [make_sample(7, i, "meter", "hand") for i in range(8)]
+    assert any(any(c for c in s.hidden["main"]) for s in h if not s.readable["main"])

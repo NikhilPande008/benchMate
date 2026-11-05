@@ -31,6 +31,7 @@ from engine.session.repair import RepairSession
 from engine.telemetry import SpanIn, TelemetryStore, TranscriptIn, lang_tag, load_evidence, load_repair_state, now_ms
 from engine.tools import ToolContext, one_line, run_tool
 from mcp_evidence.fake_bench import SCENARIOS, FakeBench
+from mcp_evidence.vision.bench import VisionBench
 from mcp_evidence.schema import EvidenceRecord
 
 log = logging.getLogger("benchmate.ws")
@@ -86,6 +87,17 @@ class Connections(OrderedDict[str, "Connection"]):
             self.popitem(last=False)
 
 
+def make_bench(settings: Settings, scenario: str, delay: float) -> FakeBench | VisionBench:
+    """The evidence source for a connection: the fake bench, or the fake bench seen through the
+    camera pipeline (BENCHMATE_EVIDENCE=vision)."""
+    truth = FakeBench(scenario=scenario, meter_delay_s=delay, time_scale=settings.fake_time_scale)
+    if settings.evidence != "vision":
+        return truth
+    if settings.reader_a == "openai":
+        raise RuntimeError("Reader A 'openai' is disabled in Phase 3 (no API calls); see docs/PENDING_RUNS.md")
+    return VisionBench(FakeBench(scenario=scenario, time_scale=0), time_scale=settings.fake_time_scale, frames_dir=settings.frames_dir)
+
+
 class Connection:
     def __init__(self, ws: WebSocket, settings: Settings, telemetry: TelemetryStore, hello: Hello,
                  stored: Stored | None = None):
@@ -98,7 +110,7 @@ class Connection:
         self._tasks: set[asyncio.Task[None]] = set()
         delay = hello.dummy_delay_s if hello.dummy_delay_s is not None else settings.dummy_delay_s
         scenario = hello.scenario if hello.scenario in SCENARIOS else settings.fake_scenario
-        self.bench = FakeBench(scenario=scenario, meter_delay_s=delay, time_scale=settings.fake_time_scale)
+        self.bench = make_bench(settings, scenario, delay)
         hooks: dict[str, Any] = dict(
             notify=self.send, inject=self.send, vision_timeout_s=settings.vision_timeout_s,
             persist=lambda table, row: telemetry.record_repair(table, row, hello.run_id),
@@ -107,6 +119,14 @@ class Connection:
             self.repair = RepairSession.restore(stored[0], stored[1], self.bench, **hooks)
         else:
             self.repair = RepairSession(hello.session_id, self.bench, **hooks)
+        if isinstance(self.bench, VisionBench):
+            # the degradation ladder (full → Reader B only → spoken only) reaches the screen and the model
+            self.bench.health.listeners.append(lambda level, reason: self._spawn(self.repair.on_vision_level(level, reason)))
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.get_running_loop().create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def send(self, msg: dict[str, Any]) -> None:
         async with self._send_lock:

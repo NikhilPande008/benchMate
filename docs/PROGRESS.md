@@ -520,3 +520,110 @@ Phase 3 offline (no API calls, no hardware): 0 approval lifetime · A synthetic 
   `mcp_evidence/tests` is added to pytest's testpaths.
 - Test count: **2176 passed, 1 skipped in 9.3 s** (the skip: no dim LCD on the supply); `npm test`
   58; typecheck and build pass.
+
+## 2026-11-05 · Phase 3 part B: evidence server vision pipeline (checkpoint B)
+
+All synthetic or fixture-based: no API calls, no hardware.
+
+- **Split discipline** (your three conditions):
+  - Generator v2 adds digit-style families (upright, italic, thin, bold, narrow, wide), per-frame
+    segment truth and hidden segments to the labels. Set regenerated: 700 samples, 2,100 images.
+  - Held out of all tuning: the distortions glare, low_contrast, noise and mid_update, and the
+    families bold and narrow. Split sizes: tune 287 samples, held-out distortion 182, style 133,
+    both 98.
+  - Reader B was tuned on the tune split only, then frozen. The held-out splits ran once on the
+    frozen reader (SHA-256 `8d0f53dfe8328658`, recorded in every results file).
+  - `eval/display_set/real_misc/` is supported: README with the label format (`labels.csv` or
+    `.jsonl`). The photos are git-ignored, because of EXIF GPS. It is reported apart and never
+    tuned on. It's empty until you add photos.
+  - Per-segment confidence calibration is reported (reliability bins and ECE), as well as
+    reading-level calibration.
+- `mcp_evidence/vision/` (new):
+  - `frames.py`: `Frame`, `FrameRing` (2 s), and a camera interface with `FakeCamera` (sequence,
+    still, render function, `fail()`) and `OpenCVCamera` (device or video file; tested on files
+    only). Capture runs on worker threads.
+  - `calibration.py`: four-corner ROIs per display and per digit row, homographies, flat crops
+    (96 px rows for Reader B, 512 px wide displays for Reader A), JSON store, and the
+    camera-moved check (ORB + RANSAC; ROI corners moved > 6 px, or too few matches, means
+    moved).
+  - `glyphs.py`: the segment table (digits in both styles, minus, OL, status letters), shared
+    with the generator.
+  - `reader_b.py`: pure Python on OpenCV. It reads ink with polarity detection, removes the
+    background with a grey opening, deskews from stroke-edge slopes and searches a grid anchored
+    at both ends. Each segment gets P(lit) from the field's own lit/unlit levels. Each cell gets a
+    posterior over every glyph plus "not a glyph". Decimal points are found as a baseline dot
+    with nothing above it, with a prior that one is usually there.
+    - It refuses to read occluded rows: saturation, background anomaly, or (on LCDs) colour
+      foreign to the glass, like a hand.
+    - A segment's confidence includes the doubt about its cell.
+    - ~8 ms per field (p95).
+  - `reader_a.py`:
+    - the strict JSON schema (per display; the supply has three fields);
+    - `FixtureReaderA` (this phase);
+    - `HedgedReaderA` (second request at 2.5 s, first answer wins, 4 s hard timeout; an early
+      error is the one retry);
+    - `CachedReaderA` (exact hash of the crop quantised to 32 levels);
+    - `OpenAIReaderA`: Responses API, `input_image` data URL, `text.format` json_schema strict,
+      `gpt-6-luna`, `detail: high`, reasoning `none`. Written per the docs read 5 Nov and
+      **disabled** (raises unless enabled); tested only against a mock transport.
+  - `agreement.py`: the rule. Reader B on three frames 150 ms apart, Reader A on frame 1, and A
+    again on frame 2 only when needed. Then plausibility: supply current ≤ limit (re-read once;
+    persisting is a reader error), meter range per mode, meter mode against the point's mode,
+    unit normalisation (mV, kΩ, MΩ), OL kept as open. Reader-B-only level: stable on all three
+    frames, confidence ≤ 0.85 and needs confirmation, so the user is the second reader.
+  - `preread.py`: change detection (largest blurred local difference, so a decimal point counts),
+    a read once two frames are unchanged, and the cache. A cached `get_reading` returns in under
+    100 ms (test).
+  - `bootwatch.py`: Reader B on the live-current row every 0.5 s. Missed samples are counted,
+    never invented. Features and pattern come from the pack.
+  - `health.py`: the ladder (full → Reader B only after 2 Reader A failures, probing every 30 s →
+    spoken only on no frames or a moved camera), with events.
+  - `scene.py`: the fake overhead camera view (supply and meter in perspective on a textured
+    bench), rendered from the instruments' state. Faults can be injected: hand, glare, bumped
+    camera, blank meter, knob on the wrong mode.
+  - `bench.py`: `VisionBench`, an `EvidenceSource` on the pipeline: the fake bench's truth,
+    rendered, read back. Frames are saved with the evidence (`frames/`, git-ignored).
+- **Engine:**
+  - `BENCHMATE_EVIDENCE=vision` uses `VisionBench` (default stays `fake`); `BENCHMATE_READER_A`
+    is `fixture`, and `openai` refuses to start in this phase.
+  - The meter read passes the point's mode.
+  - New answers: `wrong_mode` with "switch it to diode mode", `view_blocked` (clear the view)
+    and `meter_blank` (check the meter battery).
+  - Camera reads from Reader B only, or within 5% of a band edge, go through the existing
+    read-back.
+  - Ladder changes become `vision.level` events plus an engine note.
+- **Corner cases** in BUILD_GUIDE "Vision and readings": every one has a test in
+  `mcp_evidence/tests/test_vision_bench.py`: glare, flicker and mid-update, decimal-point
+  disagreement, near threshold, wrong mode, OL, auto-ranging, camera moved, current above
+  limit, blank or dim meter, hand over the display. Also: vision API down, then back; vision
+  timeout to the hedge to Reader B only; camera unplugged; pre-read; boot-watch pattern per
+  scenario; and the at-limit watchdog to "disconnect now".
+- **Results** (all synthetic; Reader A is the fixture, with assumed error rates: 8% wrong
+  decimal, 5% wrong digit, 5% illegible, 4% slow, 2% timeout, 1% error, and it reads what is
+  visible, so a hand or glare fools it as it fools Reader B):
+
+  | Split (no corner error) | Reader B correct | B wrong | Segment ECE | Agreed correct | Agreed wrong | To spoken |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | tune | 93.3% | 0.55% | 0.006 | 376 | 0 | 153 of 529 |
+  | held-out distortions | 89.0% | 1.42% | 0.008 | 247 | 0 | 105 of 352 |
+  | held-out styles | 95.3% | 0.00% | 0.008 | 169 | 0 | 72 of 241 |
+  | held-out both | 90.7% | 0.53% | 0.004 | 152 | 0 | 56 of 208 |
+
+  - With ±3 px calibration corner error: Reader B 90.1 / 85.9 / 95.5 / 92.5%; agreed wrong 0
+    everywhere.
+  - Weakest on glare: Reader B is 61% correct (held-out distortion), the rest mostly illegible,
+    and glare sends most fields to the spoken fallback.
+- **The agreement rule was tightened after the held-out run.** The first held-out run accepted 1
+  wrong value: an LED current changing 0.000 → 0.003, where the last digit changed only on frame
+  2, so frames 0–1 agreed on 0.000. Now the agreed pair must include the latest frame. Reader B
+  reads frame 2 while Reader A answers, so it adds no time. Cost: more fields to the spoken
+  fallback (tune 134 → 153 of 529).
+  - Results files: `eval/display_set/results/tune-20261105-1513.json` and `heldout-…-1513.json`
+    (before); `tune-…-1516.json` and `heldout-…-1517.json` (after). Reader B is the same in all
+    four.
+- `docs/PENDING_RUNS.md` (new, completed in part E): the step-6 voice runs, each reporting its
+  **guardrail trip count** (`eval/scenarios/guard_replay.py --trips <run id>`, new); the real
+  Reader A runs; the hardware items.
+- New tests: `test_vision.py` (51), `test_vision_bench.py` (31), `eval/display_set/test_vision_eval.py`
+  (5); `test_synth.py` +2.
+- Test count: **2266 passed, 1 skipped in 24.5 s**; `npm test` 58; typecheck and build pass.

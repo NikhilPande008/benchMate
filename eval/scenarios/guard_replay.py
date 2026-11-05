@@ -2,6 +2,7 @@
 
     uv run python eval/scenarios/guard_replay.py                     # every e2e-* run in the telemetry DB
     uv run python eval/scenarios/guard_replay.py e2e-20261104-1330 e2e-20261104-1334
+    uv run python eval/scenarios/guard_replay.py --trips <run id> ...       # the live guardrail's trips in a run
 
 No API calls. For each session it rebuilds the timeline from telemetry (the gate's tool results,
 supply readings, user turns and transcripts, barge-ins, measurements that used an approval, and
@@ -148,8 +149,27 @@ def replay_run(run_id: str, db=None) -> dict[str, dict[str, list[dict]]]:
     return out
 
 
+def live_trips(run_id: str, db=None) -> dict[str, list[dict]]:
+    """The guardrail's own trips in a run (safety_violation spans from the page), per session."""
+    db = db or make_engine(Settings.from_env().db_path)
+    out: dict[str, list[dict]] = {}
+    for s in load_spans(db, run_id):
+        if s.name == "safety_violation" and s.source == "browser":
+            out.setdefault(s.session_id or "?", []).append(_attrs(s) | {"t_ms": s.t_ms})
+    return out
+
+
 def main() -> None:
     db = make_engine(Settings.from_env().db_path)
+    if sys.argv[1:2] == ["--trips"]:
+        for run in sys.argv[2:]:
+            trips = live_trips(run, db)
+            n = sum(len(v) for v in trips.values())
+            print(f"{run}: {n} guardrail trips")
+            for sid, ts in trips.items():
+                for t in ts:
+                    print(f"    {sid} {t.get('kind')}: {t.get('sentence')}")
+        return
     runs = sys.argv[1:]
     if not runs:
         import sqlalchemy as sa  # comes with sqlmodel

@@ -22,6 +22,6 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-testpaths = ["engine/tests", "mcp_evidence/tests", "scripts/tests", "eval/latency_script", "eval/scenarios"]
+testpaths = ["engine/tests", "mcp_evidence/tests", "scripts/tests", "eval/latency_script", "eval/scenarios", "eval/display_set"]
 addopts = "-q"
 pythonpath = ["."]

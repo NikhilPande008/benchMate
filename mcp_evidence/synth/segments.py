@@ -9,34 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-SEGMENTS = "abcdefg"
-
-# Several glyph styles exist on real displays (a "7" with or without f, "6"/"9" with or without
-# their tail); the renderer picks one per display, the reader must accept both.
-GLYPHS: dict[str, list[str]] = {
-    "0": ["abcdef"],
-    "1": ["bc"],
-    "2": ["abdeg"],
-    "3": ["abcdg"],
-    "4": ["bcfg"],
-    "5": ["acdfg"],
-    "6": ["acdefg", "cdefg"],
-    "7": ["abc", "abcf"],
-    "8": ["abcdefg"],
-    "9": ["abcdfg", "abcfg"],
-    "-": ["g"],
-    "O": ["abcdef"],
-    "L": ["def"],
-    "E": ["adefg"],
-    "r": ["eg"],
-    " ": [""],
-}
-
-# segment pattern → character, for every glyph style ("O" reads as "0"; context decides OL)
-PATTERNS: dict[frozenset[str], str] = {}
-for _ch, _styles in GLYPHS.items():
-    for _s in _styles:
-        PATTERNS.setdefault(frozenset(_s), "0" if _ch == "O" else _ch)
+from mcp_evidence.vision.glyphs import GLYPHS, PATTERNS, SEGMENTS  # noqa: F401  (re-exported)
 
 
 @dataclass(frozen=True)
