@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Harness } from './harness';
 import { EngineSocket } from './realtime/engine';
 import { startVoice, type VoiceEvent, type VoiceHandle } from './realtime/voice';
-import { Screen } from './screen/Screen';
+import { Screen, type ReplayInfo } from './screen/Screen';
 import { apply, EMPTY, type ScreenState, type UiEvent } from './screen/state';
 
 const params = new URLSearchParams(location.search);
@@ -73,15 +73,30 @@ if (harness) window.harness = harness;
 
 /** The companion screen alone, attached to a session over the engine WebSocket. */
 function ScreenOnly() {
-  const sessionId = params.get('session') ?? 'se_screen';
+  // ?replay=<session id>: play a logged session (the demo backup), at ?speed= (1 = real speed)
+  const replaySource = params.get('replay');
+  const sessionId = replaySource ? `rp_${replaySource}` : (params.get('session') ?? 'se_screen');
   const [state, setState] = useState<ScreenState>(EMPTY);
   const [connected, setConnected] = useState(false);
+  const [replay, setReplay] = useState<ReplayInfo | null>(replaySource ? { source: replaySource, t: 0, total: 0, done: false, speed: Number(params.get('speed') ?? 1) } : null);
   const socket = useRef<EngineSocket | null>(null);
   useEffect(() => {
-    const sock = new EngineSocket((ev) => setState((s) => apply(s, ev as UiEvent)));
+    const sock = new EngineSocket((ev) => {
+      if (ev.event === 'replay.progress') setReplay((r) => (r ? { ...r, t: Number(ev.t), total: Number(ev.total) } : r));
+      else if (ev.event === 'replay.done') setReplay((r) => (r ? { ...r, done: true } : r));
+      else setState((s) => apply(s, ev as UiEvent));
+    });
     socket.current = sock;
+    const maxGap = params.get('max_gap');
     sock
-      .connect({ session_id: sessionId, role: 'screen', scenario: params.get('scenario') })
+      .connect({
+        session_id: sessionId,
+        role: 'screen',
+        scenario: params.get('scenario'),
+        replay: replaySource,
+        speed: Number(params.get('speed') ?? 1),
+        max_gap_s: maxGap ? Number(maxGap) : null,
+      })
       .then(() => setConnected(true))
       .catch(() => setConnected(false));
     return () => {
@@ -89,7 +104,9 @@ function ScreenOnly() {
       setConnected(false);
     };
   }, [sessionId]);
-  return <Screen state={state} sessionId={sessionId} demo={demoMode} connected={connected} onLanguage={(l) => socket.current?.setLanguage(l)} />;
+  return (
+    <Screen state={state} sessionId={sessionId} demo={demoMode} connected={connected} replay={replay} onLanguage={(l) => socket.current?.setLanguage(l)} />
+  );
 }
 
 export function App() {

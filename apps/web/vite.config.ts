@@ -13,6 +13,7 @@ export default defineConfig({
       '/health': engine,
       '/screen': engine,
       '/dev': engine,
+      '/records': engine,
       '/ws': { target: engine.replace(/^http/, 'ws'), ws: true },
     },
   },

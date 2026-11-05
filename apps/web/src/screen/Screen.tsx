@@ -21,7 +21,12 @@ import {
 
 type Lang = 'en' | 'hi';
 
+export type ReplayInfo = { source: string; t: number; total: number; done: boolean; speed: number };
+
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
 export type ScreenProps = {
+  replay?: ReplayInfo | null;
   state: ScreenState;
   sessionId: string;
   demo: boolean;
@@ -110,6 +115,22 @@ function Banners({ s }: { s: ScreenState }) {
     out.push(
       <div key="vision" className="banner bad" data-testid="banner-degraded">
         <b>CAMERA UNAVAILABLE</b> {s.vision.reason === 'camera_moved' ? 'the camera moved: recalibrate.' : 'read the values aloud.'}
+      </div>,
+    );
+  }
+  if (s.record) {
+    out.push(
+      <div key="record" className="banner info" data-testid="banner-record">
+        <b>REPAIR RECORD</b> {s.record}
+        <a href={`/records/${s.record}/report.pdf`} target="_blank" rel="noreferrer" data-testid="record-report">
+          Repair report (PDF)
+        </a>
+        <a href={`/records/${s.record}/assessment.pdf`} target="_blank" rel="noreferrer" data-testid="record-assessment">
+          Trainee sheet (PDF)
+        </a>
+        <a href={`/records/${s.record}/report.html`} target="_blank" rel="noreferrer">
+          HTML
+        </a>
       </div>,
     );
   }
@@ -469,7 +490,7 @@ function useTheme(): [string, (t: string) => void] {
   return [theme, setTheme];
 }
 
-export function Screen({ state: s, sessionId, demo, connected, onLanguage, latencies = [], devControls, pttHint }: ScreenProps) {
+export function Screen({ state: s, sessionId, demo, connected, onLanguage, latencies = [], devControls, pttHint, replay }: ScreenProps) {
   const [theme, setTheme] = useTheme();
   const [open, setOpen] = useState<Evidence | null>(null);
   const [calibrating, setCalibrating] = useState(false);
@@ -513,6 +534,11 @@ export function Screen({ state: s, sessionId, demo, connected, onLanguage, laten
         )}
       </header>
       {!demo && devControls}
+      {replay && (
+        <div className="banner info replay" data-testid="banner-replay">
+          <b>REPLAY</b> of session {replay.source} · {replay.done ? 'finished' : `${clock(replay.t)} / ${clock(replay.total)}`} · speed {replay.speed}× · no voice, no API
+        </div>
+      )}
       <Banners s={s} />
       <div className="grid">
         <BoardView s={s} sessionId={sessionId} />

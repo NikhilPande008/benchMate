@@ -19,7 +19,16 @@ export type TranscriptMsg = {
   languages?: string[];
 };
 
-type Hello = { session_id: string; run_id?: string | null; dummy_delay_s?: number | null; scenario?: string | null; role?: 'voice' | 'screen' };
+type Hello = {
+  session_id: string;
+  run_id?: string | null;
+  dummy_delay_s?: number | null;
+  scenario?: string | null;
+  role?: 'voice' | 'screen';
+  replay?: string | null; // play this logged session to the screen
+  speed?: number;
+  max_gap_s?: number | null;
+};
 
 export class EngineSocket {
   private ws: WebSocket | null = null;
@@ -33,6 +42,7 @@ export class EngineSocket {
   /** Set once the voice session exists; notes that arrive earlier wait here. */
   onNote: ((note: EngineNote) => void) | null = null;
   private notes: EngineNote[] = [];
+  private summaryWaiters: ((msg: { text: string; pause_ok: boolean; why?: string | null }) => void)[] = [];
 
   constructor(private onUi: (ev: UiEvent) => void = () => {}) {}
 
@@ -71,6 +81,8 @@ export class EngineSocket {
         } else if (msg.type === 'inject') {
           if (this.onNote) this.onNote(msg as EngineNote);
           else this.notes.push(msg as EngineNote);
+        } else if (msg.type === 'summary') {
+          for (const w of this.summaryWaiters.splice(0)) w(msg);
         } else if (msg.type === 'error') {
           console.warn('engine:', msg.detail);
         }
@@ -112,6 +124,27 @@ export class EngineSocket {
   /** The screen's reply-language toggle: sets the session language (the engine tells the model). */
   setLanguage(lang: 'hi' | 'en'): void {
     this.send({ type: 'lang', lang });
+  }
+
+  /** Before a rotation or reconnect: the engine's session summary, and whether now is a natural pause. */
+  requestSummary(timeoutMs = 3000): Promise<{ text: string; pause_ok: boolean; why?: string | null }> {
+    return new Promise((resolve) => {
+      const done = (msg: { text: string; pause_ok: boolean; why?: string | null }) => {
+        window.clearTimeout(t);
+        resolve(msg);
+      };
+      const t = window.setTimeout(() => {
+        this.summaryWaiters = this.summaryWaiters.filter((w) => w !== done);
+        resolve({ text: 'Session summary unavailable: call next_step before the next instruction.', pause_ok: false, why: 'timeout' });
+      }, timeoutMs);
+      this.summaryWaiters.push(done);
+      this.send({ type: 'summary' });
+    });
+  }
+
+  /** The voice session was rotated or reconnected (logged by the engine). */
+  rotated(reason: string, ms: number): void {
+    this.send({ type: 'event', name: 'rotated', reason, ms });
   }
 
   /** Dev controls: switch the fake bench scenario. */

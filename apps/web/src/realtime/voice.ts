@@ -15,6 +15,7 @@ import {
 
 import { filterDataChannel } from './channelFilter';
 import { PowerApprovals } from './powerGuard';
+import { SessionManager, type RotationConfig, type VoiceSession } from './rotation';
 import { EngineSocket, type EngineNote, type UiEvent } from './engine';
 import { clipLangFor, LocalPreamble, type PreambleLang, type PreamblePath } from './preamble';
 import { nowMs, Spans, watchAudioOnset } from './telemetry';
@@ -34,6 +35,7 @@ export type VoiceConfig = {
   turn_modes: Record<string, TurnDetection>;
   reasoning: { effort: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' };
   truncation: Record<string, unknown>;
+  rotation?: RotationConfig;
   max_output_tokens: number | null;
   transcription: Record<string, unknown>;
   tools: ToolSpec[];
@@ -93,6 +95,8 @@ export type LiveState = {
   /** The engine's session language (two consecutive turns to switch); picks the preamble clip. */
   sessionLang: PreambleLang | null;
   pttDown: boolean;
+  /** Input tokens of the last reply: the context the model carries (rotation). */
+  contextTokens: number;
 };
 
 export type VoiceHandle = {
@@ -139,6 +143,7 @@ type SecretRequest = {
   prompt: string | null;
   output_cap: boolean | null;
   use_pool: boolean;
+  session_id?: string; // a rotation or reconnect: continue this repair session
 };
 
 /** Started by the inline script in index.html before the bundle loads (one use only). */
@@ -244,7 +249,68 @@ export async function startVoice(opts: VoiceOptions): Promise<VoiceHandle> {
   });
   try {
     const [mic, secret] = await Promise.all([micP, secretP]);
-    return await connectSession(opts, mic, secret, engine, spans, stage, setUiHook);
+    let manager: SessionManager | null = null;
+    const onTurn = () => manager?.turnDone();
+    const first = await connectSession(opts, mic, secret, engine, spans, stage, setUiHook, { standby: false, onTurn });
+    const cfg = secret.config;
+    const handles = new Map<VoiceSession, VoiceHandle>([[first.control, first.handle]]);
+    let cur = first.handle;
+    manager = new SessionManager(cfg.rotation ?? { enabled: false, max_turns: 25, max_minutes: 30, max_context_tokens: 24000 }, {
+      // the next voice session continues this repair session (same id), muted until the swap
+      open: async () => {
+        const s = await mintClientSecret({ ...body, session_id: first.handle.sessionId });
+        const c = await connectSession(opts, mic, s, engine, spans, stage, setUiHook, { standby: true, onTurn });
+        handles.set(c.control, c.handle);
+        return c.control;
+      },
+      summary: () => engine.requestSummary(),
+      report: (name, attrs) => {
+        spans.record(name, attrs);
+        if (name === 'rotated') engine.rotated(String(attrs.reason), Number(attrs.ms));
+        if (name === 'connection_dropped') opts.onEvent({ kind: 'status', text: 'connection dropped: reconnecting…' });
+        if (name === 'reconnect_gave_up') opts.onEvent({ kind: 'error', text: 'could not reconnect the voice session' });
+      },
+    });
+    manager.adopt(first.control);
+    manager.onSwap = (c) => {
+      cur = handles.get(c) ?? cur;
+      opts.onEvent({ kind: 'status', text: `connected: ${cur.model} (${cur.sessionId})` });
+    };
+    const timer = window.setInterval(() => void manager?.tick(), 1000);
+    // One handle for the page, always pointing at the active voice session.
+    return {
+      get sessionId() {
+        return cur.sessionId;
+      },
+      get model() {
+        return cur.model;
+      },
+      get config() {
+        return cur.config;
+      },
+      spans,
+      get state() {
+        return cur.state;
+      },
+      turnMode: () => cur.turnMode(),
+      setTurnMode: (m) => cur.setTurnMode(m),
+      pttKey: () => cur.pttKey(),
+      setPttKey: (code) => {
+        for (const h of handles.values()) h.setPttKey(code);
+      },
+      pttDown: () => cur.pttDown(),
+      pttUp: () => cur.pttUp(),
+      clipPlaying: () => cur.clipPlaying(),
+      scenario: () => cur.scenario(),
+      setScenario: (n) => cur.setScenario(n),
+      setLanguage: (l) => cur.setLanguage(l),
+      peer: () => cur.peer(),
+      stop: () => {
+        window.clearInterval(timer);
+        manager?.close();
+        first.shutdown();
+      },
+    };
   } catch (err) {
     micP.then((m) => !opts.micStream && m.getTracks().forEach((t) => t.stop())).catch(() => {});
     engine.close();
@@ -260,7 +326,13 @@ async function connectSession(
   spans: Spans,
   stage: (name: string, attrs?: Record<string, unknown>, t?: number) => void,
   setUiHook: (hook: (ev: UiEvent) => void) => void,
-): Promise<VoiceHandle> {
+  role: { standby: boolean; onTurn?: () => void },
+): Promise<{ handle: VoiceHandle; control: VoiceSession; shutdown: () => void }> {
+  // A standby session (rotation, reconnect) connects muted: it doesn't hear the mic, play audio,
+  // react to the talk key or take engine notes until activated.
+  let active = !role.standby;
+  let dropCb = null as ((reason: string) => void) | null;
+  let closing = false;
   const { onEvent } = opts;
   const cfg = secret.config;
   const runId = opts.runId ?? null;
@@ -273,6 +345,7 @@ async function connectSession(
     userLang: null,
     sessionLang: null,
     pttDown: false,
+    contextTokens: 0,
   };
   const touch = () => {
     state.lastActivity = nowMs();
@@ -286,13 +359,17 @@ async function connectSession(
   // lifetime; the engine's power.ended events end it too.
   const approvals = new PowerApprovals();
 
-  setUiHook((ev) => {
+  const uiHook = (ev: UiEvent) => {
     approvals.onEngineEvent(ev);
     if (ev.event === 'session.lang' && (ev.lang === 'en' || ev.lang === 'hi')) state.sessionLang = ev.lang;
-  });
-  const engineReady = engine
-    .connect({ session_id: secret.session_id, run_id: runId, dummy_delay_s: opts.dummyDelayS ?? null, scenario: opts.scenario ?? null })
-    .then(() => stage('engine_ready', { scenario: engine.scenario }));
+  };
+  if (active) setUiHook(uiHook);
+  // the engine socket is shared: only the first session opens it (same repair session id)
+  const engineReady = role.standby
+    ? Promise.resolve()
+    : engine
+        .connect({ session_id: secret.session_id, run_id: runId, dummy_delay_s: opts.dummyDelayS ?? null, scenario: opts.scenario ?? null })
+        .then(() => stage('engine_ready', { scenario: engine.scenario }));
   if (cfg.preamble === 'local') {
     void LocalPreamble.create((n, a, t) => spans.record(n, a, t), opts.preamblePath).then((p) => (preamble = p));
   }
@@ -342,9 +419,21 @@ async function connectSession(
     changePeerConnection: (pc) => {
       peer = pc;
       stage('pc_offer');
+      let lost: number | null = null;
       pc.addEventListener('connectionstatechange', () => {
-        if (pc.connectionState === 'connected') stage('pc_connected');
-        else spans.record('pc_state', { state: pc.connectionState });
+        if (pc.connectionState === 'connected') {
+          stage('pc_connected');
+          if (lost !== null) window.clearTimeout(lost);
+          lost = null;
+          return;
+        }
+        spans.record('pc_state', { state: pc.connectionState });
+        if (closing) return;
+        // a dropped connection: reconnect (rotation.ts). "disconnected" can recover; give it 2.5 s.
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') dropCb?.(`pc_${pc.connectionState}`);
+        else if (pc.connectionState === 'disconnected' && lost === null) {
+          lost = window.setTimeout(() => pc.connectionState !== 'connected' && !closing && dropCb?.('pc_disconnected'), 2500);
+        }
       });
       pc.addEventListener('track', (ev) => {
         if (ev.track.kind !== 'audio' || stopOnset) return;
@@ -429,6 +518,7 @@ async function connectSession(
         touch();
         const s = spans.record('speech_end', { audio_end_ms: e.audio_end_ms, item_id: e.item_id, mode: turnMode });
         state.lastSpeechEnd = s.t_ms;
+        if (active) role.onTurn?.();
         awaitingFirstAudio = true;
         break;
       }
@@ -485,7 +575,7 @@ async function connectSession(
           out_tokens: r.usage?.output_tokens,
           out_audio_tokens: r.usage?.output_token_details?.audio_tokens,
           out_text_tokens: r.usage?.output_token_details?.text_tokens,
-          in_tokens: r.usage?.input_tokens,
+          in_tokens: (state.contextTokens = r.usage?.input_tokens ?? state.contextTokens),
           in_cached_tokens: r.usage?.input_token_details?.cached_tokens,
           // the split that prices differ by (engine/telemetry/cost.py)
           in_audio_tokens: r.usage?.input_token_details?.audio_tokens,
@@ -544,6 +634,7 @@ async function connectSession(
     touch();
     const s = spans.record('speech_end', { mode: 'ptt' });
     state.lastSpeechEnd = s.t_ms;
+    if (active) role.onTurn?.();
     awaitingFirstAudio = true;
     session.transport.sendEvent({ type: 'input_audio_buffer.commit' });
     session.transport.sendEvent({ type: 'response.create' });
@@ -552,11 +643,13 @@ async function connectSession(
     onEvent({ kind: 'ptt', down: false });
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    if (!active) return;
     if (turnMode !== 'ptt' || (e.code !== pttKey && e.key !== pttKey) || isTyping(e.target)) return;
     e.preventDefault();
     if (!e.repeat) pttDown();
   };
   const onKeyUp = (e: KeyboardEvent) => {
+    if (!active) return;
     if (turnMode !== 'ptt' || (e.code !== pttKey && e.key !== pttKey)) return;
     e.preventDefault();
     pttUp();
@@ -578,17 +671,38 @@ async function connectSession(
     onEvent({ kind: 'turn_mode', mode });
   };
 
-  onEvent({ kind: 'status', text: `connecting ${cfg.model}…` });
+  if (role.standby) audioElement.muted = true;
+  else onEvent({ kind: 'status', text: `connecting ${cfg.model}…` });
   await Promise.all([engineReady, session.connect({ apiKey: secret.client_secret })]);
   traceOutgoing(transport, spans);
-  engine.setNoteHandler(injectNote);
-  stage('ready', { model: cfg.model, prompt_version: cfg.prompt_version, turn_mode: turnMode });
-  if (turnMode === 'ptt') session.mute(true);
+  if (role.standby) {
+    session.mute(true);
+    stage('standby_ready', { model: cfg.model });
+  } else {
+    engine.setNoteHandler(injectNote);
+    stage('ready', { model: cfg.model, prompt_version: cfg.prompt_version, turn_mode: turnMode });
+    if (turnMode === 'ptt') session.mute(true);
+  }
   recordConnectDetails(spans, peer);
   unlockAudioIfBlocked(audioElement, onEvent);
-  onEvent({ kind: 'status', text: `connected: ${cfg.model} (${secret.session_id})` });
+  if (!role.standby) onEvent({ kind: 'status', text: `connected: ${cfg.model} (${secret.session_id})` });
 
-  return {
+  const closeSession = () => {
+    if (closing) return;
+    closing = true;
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+    recordConnectDetails(spans, peer, 'rtt_end');
+    session.close();
+    stopOnset?.();
+    preamble?.close();
+  };
+  const shutdown = () => {
+    if (!opts.micStream) for (const t of mic.getTracks()) t.stop();
+    window.setTimeout(() => engine.close(), 300);
+    onEvent({ kind: 'status', text: 'disconnected' });
+  };
+  const handle: VoiceHandle = {
     sessionId: secret.session_id,
     model: cfg.model,
     config: cfg,
@@ -608,18 +722,52 @@ async function connectSession(
     setLanguage: (lang: PreambleLang) => engine.setLanguage(lang),
     peer: () => peer,
     stop: () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      recordConnectDetails(spans, peer, 'rtt_end');
-      session.close();
-      stopOnset?.();
-      preamble?.close();
-      if (!opts.micStream) for (const t of mic.getTracks()) t.stop();
-      window.setTimeout(() => engine.close(), 300);
-      onEvent({ kind: 'status', text: 'disconnected' });
+      closeSession();
+      shutdown();
     },
   };
+  sessionCounter += 1;
+  const id = `${secret.session_id}#${sessionCounter}`;
+  const control: VoiceSession = {
+    id,
+    activate: () => {
+      active = true;
+      audioElement.muted = false;
+      setUiHook(uiHook);
+      engine.setNoteHandler(injectNote);
+      session.mute(turnMode === 'ptt');
+      spans.record('session_active', { id });
+    },
+    deactivate: () => {
+      active = false;
+      if (state.audioPlaying || state.responsesInFlight > 0) session.interrupt();
+      session.mute(true);
+      audioElement.muted = true;
+    },
+    close: closeSession,
+    inject: (text: string, respond: boolean) => {
+      session.transport.sendEvent({
+        type: 'conversation.item.create',
+        item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] },
+      });
+      if (respond) session.transport.sendEvent({ type: 'response.create' });
+    },
+    onDrop: (cb) => {
+      dropCb = cb;
+    },
+    live: () => ({
+      audioPlaying: state.audioPlaying,
+      responsesInFlight: state.responsesInFlight,
+      toolsPending: state.toolsPending,
+      pttDown: state.pttDown,
+      lastActivity: state.lastActivity,
+    }),
+    contextTokens: () => state.contextTokens,
+  };
+  return { handle, control, shutdown };
 }
+
+let sessionCounter = 0;
 
 /** Drop the SDK's stalling item retrieves and trace response events (see channelFilter.ts). */
 function traceOutgoing(transport: OpenAIRealtimeWebRTC, spans: Spans): void {

@@ -696,3 +696,67 @@ bench and fake cameras. No audio, no API.
   - `src/screen/state.test.ts` (8).
 - Test count: **2285 passed, 1 skipped in 35.5 s** (UI tests ~9 s); `npm test` 66; typecheck and
   build pass.
+
+## 2026-11-05 · Phase 3 part D: context manager, records and replay (checkpoint D)
+
+- **Context manager** (`engine/session/context.py`, new):
+  - The truncation config (`retention_ratio` 0.8, `post_instructions` 8000) was already in the
+    session config and is tested again.
+  - `summary_text()`: the session in at most 700 characters: phone, symptom, battery, reply
+    language, state, top 3 faults, recent readings with source, the next step (and whether it
+    needs the gate), any safety stop, then "call next_step".
+  - It goes to the model as a non-urgent engine note every 6 user turns.
+  - `pause_ok()`: no approval live, no read-back waiting, no boot watch running.
+- **WebSocket:**
+  - `{"type":"summary"}` returns the summary and whether now is a pause.
+  - `{"type":"event","name":"rotated"}` is logged (span, `session.rotated` event, counts).
+  - A client-secret request may carry the repair's `session_id`, so a rotated or reconnected voice
+    session continues the same repair. Each voice session gets its own `realtime_sessions` row.
+  - The page config gains `rotation` (25 turns, 30 min, 24k context tokens).
+- **Rotation and reconnect on the page** (`apps/web/src/realtime/rotation.ts`, new):
+  - `SessionManager`: rotation is due on turns, time or context, and only at a natural pause: the
+    page is quiet (nothing playing or in flight, talk key up, 1.5 s quiet) and the engine agrees.
+  - It pre-opens the next session in the background (muted, inactive), seeds it with the summary
+    and swaps. If the user talks first, the standby waits for the next pause.
+  - On a drop, the ready standby takes over at once, or a new session opens with backoff
+    (0.5 → 8 s, 8 attempts). It is seeded with the summary and says "I'm back".
+  - `voice.ts`: `connectSession` returns a handle plus a control (activate, deactivate, inject,
+    drop detection from the peer connection, live state, context tokens). A standby ignores the
+    talk key and the engine's notes, and doesn't open a second engine socket. `startVoice` gives
+    the page one handle that follows the active session.
+  - **Rotation is off by default** (`BENCHMATE_ROTATION=1` turns it on) until the live test in
+    PENDING_RUNS A3 passes. Reconnect is always on.
+- **Repair records:**
+  - Close-out now also stores the steps the engine proposed, the gate's approvals, blocks and
+    endings, violations, stops, disconnect alerts, the final ranking, the fix-check result, times,
+    language and level.
+  - `engine/records/` (new) renders the repair report and the trainee assessment as HTML, then PDF
+    through headless Chromium. No customer field; the trainee's name is a blank line.
+    - The report covers outcome, fault, fix, confirming reading, readings with class, source and
+      confidence, the ledger's ranking, and safety. It is marked simulated or placeholder where
+      true.
+    - The assessment covers the suggested steps done or not, four good-practice checks (battery
+      out, no guardrail stops, read-backs, fix confirmed), a score and signature lines.
+  - Routes `/records/{id}`, `/records/{id}/report.{html,pdf}`, `/records/{id}/assessment.{html,pdf}`.
+    The screen shows the record with PDF links after close-out.
+- **Recall:** `recall(pack, symptom)` over past records (count, fixed, most common confirmed fault,
+  latest five). `start_repair`'s line adds `"recall":{"n","fixed","top"}` when there is history.
+  The ledger's priors are unchanged (rule 1). `GET /records?pack=&symptom=`.
+- **Replay** (`engine/replay.py`, new):
+  - The engine logs every UI message it sends (`ui_events` table).
+  - `/?screen=1&replay=<session>&speed=1` plays a session back through the companion screen at
+    real speed (`speed`, `max_gap` shorten it), with a REPLAY banner and progress.
+  - Evidence frames come from the log, and the board view follows the replayed step.
+    `GET /replays` lists sessions. No voice, no API.
+  - The evidence-frame route now also serves logged frames, only from inside the frames folder,
+    with strict id checks.
+- Tests:
+  - `engine/tests/test_context.py` (7);
+  - `rotation.test.ts` (9: due rules, natural pause, backoff, pre-open and swap, no swap while
+    talking or when the engine says not now, drop handed to the standby, reconnect with backoff,
+    giving up, a dropped standby);
+  - `engine/tests/test_records.py` (8, PDF included);
+  - `engine/tests/test_replay.py` (4: order, original pace at speed 1 and 20, frames and board
+    after the original is gone, unknown session);
+  - one UI test (close-out links, PDF from the link, replay to the same picture).
+- Test count: **2305 passed, 1 skipped in 41.5 s**; `npm test` 75; typecheck and build pass.

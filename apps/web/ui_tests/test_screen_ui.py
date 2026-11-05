@@ -305,3 +305,27 @@ def test_readback_and_safety_stop_banners(page, engine):
     drive(engine, sid, {"type": "transcript", "role": "user", "text": "the battery is swollen", "t_ms": 9})
     page.get_by_test_id("banner-stop").wait_for()
     assert page.get_by_test_id("session-state").inner_text() == "STOPPED"
+
+
+def test_close_out_links_the_record_and_a_replay_shows_the_session_again(page, engine):
+    sid = "se_ui_replay"
+    open_screen(page, engine, sid)
+    drive(engine, sid, {"type": "transcript", "role": "user", "text": "Demo phone hai, dead hai", "t_ms": 1})
+    started(engine, sid)
+    tool(engine, sid, "get_reading", kind="meter", point_id="vbat_conn")
+    closed = tool(engine, sid, "close_repair", result="unresolved", note="ran out of time")
+    banner = page.get_by_test_id("banner-record")
+    banner.wait_for()
+    assert closed["record"] in banner.inner_text()
+    href = page.get_by_test_id("record-report").get_attribute("href")
+    pdf = httpx.get(f"{engine}{href}", timeout=30)
+    assert pdf.status_code == 200 and pdf.content[:5] == b"%PDF-"
+    assert httpx.get(f"{engine}{page.get_by_test_id('record-assessment').get_attribute('href')}", timeout=30).status_code == 200
+    # the demo backup: the same session through the screen again, no voice, no API
+    page.goto(f"{engine}/?screen=1&replay={sid}&speed=40&demo=1")
+    page.get_by_test_id("banner-replay").filter(has_text="finished").wait_for(timeout=20000)
+    assert page.get_by_test_id("supply-volts").inner_text() == "4.00"
+    assert page.get_by_test_id("meter-class").inner_text() == "SHORT"
+    assert "Demo phone hai" in page.get_by_test_id("conversation").inner_text()
+    assert page.get_by_test_id("banner-record").count() == 1 and page.locator("[data-testid^='fault-']").count() >= 3
+    page.wait_for_function("() => document.querySelector('[data-testid=reference]')?.naturalWidth === 640")

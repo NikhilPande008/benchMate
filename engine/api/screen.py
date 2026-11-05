@@ -120,14 +120,39 @@ async def board_point(session: str, request: Request) -> dict[str, Any]:
 
 @router.get("/evidence/{session}/{evidence_id}.jpg")
 async def evidence_frame(session: str, evidence_id: str, request: Request) -> Response:
-    conn = _conn(request, session)
-    rec = next((e for e in conn.repair.evidence if e.id == evidence_id), None)
-    if rec is None or not rec.frame_paths:
+    """The frame of a reading: from the live session, or from the log (a replay, or after a restart).
+    Only paths the engine wrote, inside its frames folder."""
+    if not SESSION_RE.match(session) or not re.match(r"^ev_[0-9a-f]{6,40}$", evidence_id):
+        raise HTTPException(400, "bad id")
+    conn = request.app.state.connections.get(session)
+    rec = next((e for e in conn.repair.evidence if e.id == evidence_id), None) if conn is not None else None
+    paths = rec.frame_paths if rec is not None else await asyncio.to_thread(_logged_frame, request, session, evidence_id)
+    if not paths:
         raise HTTPException(404, "no frame for that reading")
-    path = Path(rec.frame_paths[0])  # only paths the engine itself wrote
-    if not path.is_file():
+    path = Path(paths[0]).resolve()
+    root = request.app.state.settings.frames_dir.resolve()
+    if root not in path.parents or not path.is_file():
         raise HTTPException(404, "frame file is gone")
     return Response(path.read_bytes(), media_type="image/jpeg")
+
+
+def _logged_frame(request: Request, session: str, evidence_id: str) -> list[str]:
+    import json
+
+    from engine.telemetry import load_evidence
+
+    for r in load_evidence(request.app.state.telemetry.engine, session):
+        if r.id == evidence_id:
+            return json.loads(r.data).get("frame_paths") or []
+    return []
+
+
+async def list_replays(request: Request) -> dict[str, Any]:
+    from engine.telemetry import list_ui_sessions
+
+    telemetry = request.app.state.telemetry
+    await telemetry.flush()
+    return {"sessions": await asyncio.to_thread(list_ui_sessions, telemetry.engine)}
 
 
 @router.get("/calibration")

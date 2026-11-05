@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
-from engine.api import dev, realtime, screen, ws
+from engine.api import dev, realtime, records, screen, ws
 from engine.config import Settings
 from engine.telemetry import TelemetryStore
 
@@ -43,6 +43,12 @@ def create_app(
     app.include_router(ws.router)
     app.include_router(dev.router)
     app.include_router(screen.router)
+    app.include_router(records.router)
+
+    @app.get("/replays")
+    async def replays(request: Request) -> dict[str, object]:
+        """Logged sessions that can be replayed through the companion screen (engine/replay.py)."""
+        return await screen.list_replays(request)
 
     @app.get("/health")
     async def health() -> dict[str, object]:

@@ -39,6 +39,13 @@ Step-6 total: about $0.94 (≤ $1.18), $1.28 with the optional comparison.
 | Reader A on the real photos (`real_misc/`, then `real/`) | same, `--real-misc` | < $0.02 | Same; replaces the fixture's assumed error rates in the report |
 | Latency: Reader A p50/p95, hedge rate | from the run above | — | p95 ≤ 2.5 s (else the hedge carries it); timeouts < 2% |
 
+### A3. Session rotation and reconnect (written and tested on a fake transport; rotation off by default)
+
+| Run | Command | Est. cost | Pass criterion |
+| --- | --- | ---: | --- |
+| Live rotation: a 30-turn spoken session with rotation on and the turn limit lowered to 8 | `BENCHMATE_ROTATION=1 uv run python eval/scenarios/voice_run.py --start-engine --scenarios short_battery_line --prompt v4_local` (a `--rotate-after 8` option is still to add) | ~$0.25 (two extra session connects plus the seeded summaries) | The `rotated` span appears at a pause; no audio gap or double voice; the next turn after the swap is answered correctly and calls `next_step`; p95 latency unchanged. Then turn rotation on by default |
+| Reconnect: drop the WebRTC connection mid-session (Chrome DevTools offline for 5 s, or close the peer connection from the console) | same session, by hand | ~$0.05 | The agent says "I'm back" within 10 s of the network returning; the repair continues from the engine summary; no repeated power instruction |
+
 ## B. Hardware
 
 | Item | What to do | Pass criterion |

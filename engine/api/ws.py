@@ -4,6 +4,7 @@ Browser -> engine
   {"type":"hello","session_id":..,"run_id":..,"dummy_delay_s":..,"scenario":..,"role":"voice"|"screen"}
       role "screen": a companion screen. It attaches to the session's live connection as a viewer
       (UI events and screen.state only), or opens the session itself if none is live.
+      "replay": <session id> (with "speed", "max_gap_s"): play a logged session to this screen.
   {"type":"tool_call","call_id":..,"name":..,"args":{..}|"..","turn":n}
   {"type":"spans","spans":[{"name":..,"t_ms":..,"turn":n,"attrs":{..}}, ..]}
   {"type":"transcript","role":"user"|"assistant","text":..,"t_ms":..,"item_id":..,"languages":[..]}
@@ -11,12 +12,15 @@ Browser -> engine
   {"type":"event","name":"safety_violation","kind":..,"text":..}   guardrail stopped an unapproved power instruction
   {"type":"dev","scenario":..}                 fake bench scenario (dev controls)
   {"type":"lang","lang":"hi"|"en"}             the screen's reply-language toggle
+  {"type":"summary"}                           the page is about to rotate or reconnect the voice session
+  {"type":"event","name":"rotated","reason":"turns"|"time"|"tokens"|"reconnect"}   it did
 Engine -> browser
   {"type":"ready","session_id":..,"scenario":..}
   {"type":"tool_result","call_id":..,"output":"<one JSON line>"}
   {"type":"ui","event":"tool.started"|"tool.finished"|"ledger.updated"|"session.lang"|..,..}
   {"type":"ui","event":"screen.state","state":{..}}   the whole screen, after every change (debounced)
   {"type":"inject","urgent":bool,"text":..}    short engine message for the voice session
+  {"type":"summary","text":..,"pause_ok":bool,"why":..}   the session summary, and whether now is a natural pause
   {"type":"error","detail":..}
 """
 from __future__ import annotations
@@ -30,6 +34,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, ValidationError
 
 from engine.config import Settings
+from engine.records import recall as recall_records
+from engine.replay import run_replay
 from engine.session.repair import RepairSession
 from engine.telemetry import SpanIn, TelemetryStore, TranscriptIn, lang_tag, load_evidence, load_repair_state, now_ms
 from engine.tools import ToolContext, one_line, run_tool
@@ -48,6 +54,9 @@ class Hello(BaseModel):
     dummy_delay_s: float | None = Field(default=None, ge=0, le=10)
     scenario: str | None = Field(default=None, max_length=64)
     role: str = Field(default="voice", pattern="^(voice|screen)$")
+    replay: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_\-]{1,64}$")  # replay this logged session to the screen
+    speed: float = Field(default=1.0, gt=0, le=1000)
+    max_gap_s: float | None = Field(default=None, gt=0, le=3600)
 
 
 class ToolCall(BaseModel):
@@ -121,6 +130,7 @@ class Connection:
         hooks: dict[str, Any] = dict(
             notify=self.send, inject=self.send, vision_timeout_s=settings.vision_timeout_s,
             persist=lambda table, row: telemetry.record_repair(table, row, hello.run_id),
+            recall=lambda pack_id, symptom: asyncio.to_thread(recall_records, telemetry.engine, pack_id, symptom),
         )
         if stored:
             self.repair = RepairSession.restore(stored[0], stored[1], self.bench, **hooks)
@@ -143,6 +153,7 @@ class Connection:
                 except (RuntimeError, WebSocketDisconnect):  # closed: late UI events have nowhere to go
                     log.debug("dropped %s after close", msg.get("type"))
             if msg.get("type") == "ui":
+                self.telemetry.record_ui(self.hello.session_id, msg, self.hello.run_id)  # for replay
                 for v in list(self.viewers):
                     try:
                         await v.send_json(msg)
@@ -204,6 +215,12 @@ class Connection:
                 self.repair.on_barge_in()
             elif kind == "lang" and msg.get("lang") in ("hi", "en"):
                 await self.repair.set_language(msg["lang"])
+            elif kind == "summary":
+                await self.send({"type": "summary", **self.repair.rotation_check()})
+            elif kind == "event" and msg.get("name") == "rotated":
+                reason = str(msg.get("reason", "turns"))[:20]
+                self.span("rotated", 0, reason=reason, ms=msg.get("ms"))
+                self.repair.on_rotated(reason)
             elif kind == "event" and msg.get("name") == "safety_violation":
                 vk, vt = str(msg.get("kind", ""))[:40], str(msg.get("text", ""))[:300]
                 self.span("safety_violation", 0, kind=vk, text=vt)
@@ -269,6 +286,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         return
 
     connections = getattr(ws.app.state, "connections", None)
+    if hello.replay:
+        await run_replay(ws, telemetry, connections, hello.replay, hello.speed, hello.max_gap_s)
+        return
     live = connections.get(hello.session_id) if connections is not None else None
     if hello.role == "screen" and live is not None and live.connected:
         await view(ws, live)

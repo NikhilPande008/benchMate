@@ -184,3 +184,4 @@ figcaption { color: var(--muted); font-size: 0.8rem; margin-top: 4px; }
 .ptt.on { color: var(--bad); }
 .stages { color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .screen.demo .dev { display: none; }
+.banner a { color: inherit; font-weight: 700; }

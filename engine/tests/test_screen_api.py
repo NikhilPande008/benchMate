@@ -113,7 +113,8 @@ def test_vision_mode_frames_evidence_frames_and_calibration(vclient):
         assert st["camera"] is True
         ev = next(e for e in st["evidence"] if e["kind"] == "supply")
         assert ev["frame"] and c.get(ev["frame"]).content[:2] == b"\xff\xd8"
-        assert c.get("/screen/evidence/se_s6/ev_nothere.jpg").status_code == 404
+        assert c.get("/screen/evidence/se_s6/ev_0000000000.jpg").status_code == 404
+        assert c.get("/screen/evidence/se_s6/nothere.jpg").status_code == 400
         assert c.get("/screen/frame/overhead.jpg?session=se_s6").status_code == 200
         cal = c.get("/screen/calibration?session=se_s6").json()
         roi = next(r for r in cal["rois"] if r["name"] == "supply.set_voltage")

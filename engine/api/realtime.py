@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from engine.config import Settings
+from engine.session.context import ROTATE_AFTER_S, ROTATE_AFTER_TURNS
 from engine.session.prompt import LOCAL_PREAMBLE_PROMPTS, PROMPTS, TRANSCRIPTION_KEYWORDS, load_prompt
 from engine.telemetry import RealtimeSessionRow, TelemetryStore, now_ms
 from engine.tools import tool_specs, tool_timeouts_ms
@@ -58,6 +59,8 @@ class ClientSecretRequest(BaseModel):
     prompt: str | None = Field(default=None, description="key of PROMPTS; default from config")
     output_cap: bool | None = Field(default=None, description="apply max_output_tokens (default: on)")
     use_pool: bool = True
+    # a rotation or reconnect: the new voice session continues this repair session
+    session_id: str | None = Field(default=None, pattern=r"^se_[0-9a-f]{6,32}$")
 
 
 def new_session_id() -> str:
@@ -92,6 +95,9 @@ def voice_config(
             "keywords": TRANSCRIPTION_KEYWORDS,
         },
         "tools": tool_specs(),
+        # session rotation and reconnect (apps/web/src/realtime/rotation.ts; engine/session/context.py)
+        "rotation": {"enabled": settings.rotation, "max_turns": ROTATE_AFTER_TURNS, "max_minutes": ROTATE_AFTER_S / 60,
+                     "max_context_tokens": 24000},
         "tool_timeouts_ms": tool_timeouts_ms(),  # browser-side SDK timeouts, longer than the engine's
         "dev": {"scenarios": list(SCENARIOS), "scenario": settings.fake_scenario} if settings.dev_endpoints else None,
     }
@@ -270,10 +276,10 @@ async def create_client_secret(body: ClientSecretRequest, request: Request) -> d
         minted, source = await request.app.state.mint(payload), "fresh"
     mint_ms = (time.perf_counter() - t0) * 1000
 
-    session_id = new_session_id()
+    session_id = body.session_id or new_session_id()
     telemetry.record_session(
         RealtimeSessionRow(
-            id=session_id,
+            id=session_id if body.session_id is None else f"{session_id}~{secrets.token_hex(3)}",  # one row per voice session
             run_id=body.run_id,
             model=model,
             prompt_version=cfg["prompt_version"],

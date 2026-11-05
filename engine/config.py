@@ -72,6 +72,9 @@ class Settings(BaseModel):
     # "fake": the scripted fake bench answers directly. "vision": the same bench seen through the
     # camera pipeline (rendered frames → calibration → Reader B + Reader A → agreement rule).
     evidence: str = "fake"
+    # Rotate the realtime session after ~25 turns or ~30 min at a natural pause (decided setting).
+    # Off until the live rotation test in docs/PENDING_RUNS.md passes; reconnects are always on.
+    rotation: bool = False
     # Reader A: "fixture" answers from the fake scene (no API calls); "openai" is the real call
     # (disabled in Phase 3; docs/PENDING_RUNS.md).
     reader_a: str = "fixture"
@@ -112,6 +115,7 @@ class Settings(BaseModel):
             fake_scenario=env.get("BENCHMATE_FAKE_SCENARIO", defaults.fake_scenario),
             fake_time_scale=float(env.get("BENCHMATE_FAKE_TIME_SCALE", defaults.fake_time_scale)),
             evidence=env.get("BENCHMATE_EVIDENCE", defaults.evidence),
+            rotation=env.get("BENCHMATE_ROTATION", "0") == "1",
             reader_a=env.get("BENCHMATE_READER_A", defaults.reader_a),
             vision_model=env.get("BENCHMATE_VISION_MODEL", defaults.vision_model),
             dev_endpoints=env.get("BENCHMATE_DEV_ENDPOINTS", "1") != "0",

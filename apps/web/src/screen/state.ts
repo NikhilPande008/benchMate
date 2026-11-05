@@ -74,6 +74,7 @@ export type ScreenState = {
   vision: { level: string; reason: string | null };
   pack: { id: string; name: Loc; model_data: boolean; placeholder: boolean } | null;
   readback: string | null;
+  record?: string | null;
   faults: Fault[];
   step: Step | null;
   fix: { fault: string; check: string } | null;

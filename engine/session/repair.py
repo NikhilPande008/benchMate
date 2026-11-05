@@ -28,6 +28,7 @@ from engine.safety import (
     device_out_of_scope,
 )
 from engine.safety.approval import Approval, EndReason, settings_of
+from engine.session.context import ContextManager, pause_ok, summary_text
 from engine.session.language import NOTE as LANGUAGE_NOTE, SessionLanguage, clear_language
 from mcp_evidence.packs import classify_band, classify_keywords, load_pack, model_lookup
 from mcp_evidence.packs.schema import Measurement, Pack
@@ -146,6 +147,9 @@ class RepairSession:
     last_gate: dict[str, Any] | None = None  # the safety gate's last answer, for the screen's power banner
     vision_level: tuple[str, str | None] = ("full", None)
     live_watch: list[list[float]] = field(default_factory=list)  # [t_s, current_a] of the running watch
+    context: ContextManager = field(default_factory=ContextManager)
+    record_id: str | None = None  # set by close_repair
+    recall: Callable[[str, str | None], Awaitable[dict[str, Any] | None]] | None = None  # past repairs of this model and symptom
     _sends: set[asyncio.Task] = field(default_factory=set)
 
     # --- plumbing -----------------------------------------------------------------------------
@@ -324,6 +328,8 @@ class RepairSession:
     # --- hooks from the conversation ----------------------------------------------------------
 
     async def on_user_transcript(self, text: str, lang_tag: str | None) -> None:
+        if self.context.on_user_turn() and self.ledger is not None and not self.stopped:
+            await self.note(self.summary_note())  # every few turns: older audio can go (truncation), the state stays
         changed = self.lang.observe(clear_language(text, lang_tag))
         if changed:
             await self._language_changed()
@@ -433,6 +439,13 @@ class RepairSession:
         self._event("repair.started", pack=self.pack.pack_id, model_data=self.model_data, symptom=self.symptom, top=self._top(3))
         self._save()
         out: dict[str, Any] = {"pack": self.pack.pack_id, "model_data": self.model_data, "symptom": self.symptom, "top": self._top(3)}
+        if self.recall is not None:
+            try:
+                rc = await self.recall(self.pack.pack_id, self.symptom)
+            except Exception:  # recall is a hint; it never blocks a repair
+                rc = None
+            if rc and rc.get("n"):
+                out["recall"] = {"n": rc["n"], "fixed": rc["fixed"], "top": rc.get("top_fixed_fault")}
         if self.battery != "removed":
             out["ask"] = "is_battery_removed"
         return out
@@ -888,12 +901,56 @@ class RepairSession:
             "id": new_id("rr"), "session_id": self.session_id, "pack_id": self.pack.pack_id, "symptom": self.symptom,
             "outcome": result, "fault_id": fid, "posterior": self.ledger.posterior,
             "evidence": [e.id for e in self.evidence], "note": (note or "")[:500],
+            **self._record_extras(),
         }
         self.state = "closed"
+        self.record_id = record["id"]
         self._persist("repair_records", record)
         self._save()
         self._event("repair.closed", outcome=result, fault=fid, record=record["id"])
         return {"record": record["id"], "outcome": result, "fault": fid}
+
+    def _record_extras(self) -> dict[str, Any]:
+        """What the repair report and the trainee sheet need beyond the evidence: the steps the engine
+        proposed, the safety gate's answers and endings, violations and stops, the final ranking."""
+        ev = self.events
+        first = next((e["t_ms"] for e in ev if e["event"] == "repair.started"), ev[0]["t_ms"] if ev else round(time.time() * 1000))
+        ended: dict[str, int] = {}
+        for e in ev:
+            if e["event"] == "power.ended":
+                ended[e["reason"]] = ended.get(e["reason"], 0) + 1
+        check = None
+        if self.fix_check and self.fix_at is not None:
+            after = [e for e in self.evidence[self.fix_at:] if e.measurement_id == self.fix_check]
+            check = any(self._healthy(e) for e in after) if after else None
+        return {
+            "started_ms": first, "closed_ms": round(time.time() * 1000), "model_data": self.model_data, "level": self.level,
+            "lang": self.lng, "battery": self.battery, "fix_fault": self.fix_fault, "fix_check": self.fix_check, "fix_check_passed": check,
+            "ranking": [[h, round(p, 3)] for h, p in self.ledger.ranked()] if self.ledger else [],
+            "steps": [{k: e.get(k) for k in ("t_ms", "step", "measurement", "point", "power_step")} for e in ev if e["event"] == "step.proposed"],
+            "safety": {
+                "approved": sum(1 for e in ev if e["event"] == "power.approved"),
+                "blocked": [{"step": e["step"], "reason": e["reason"]} for e in ev if e["event"] == "power.blocked"],
+                "ended": ended,
+                "violations": [{"kind": e["kind"], "text": e["text"]} for e in ev if e["event"] == "safety.violation"],
+                "stops": [e["reason"] for e in ev if e["event"] == "safety.stop"],
+                "disconnect_now": sum(1 for e in ev if e["event"] == "urgent.disconnect"),
+            },
+            "readbacks": sum(1 for e in ev if e["event"] == "readback"),
+        }
+
+    # --- context: summaries for truncation, rotation and reconnects --------------------------
+
+    def summary_note(self) -> str:
+        return summary_text(self)
+
+    def rotation_check(self) -> dict[str, Any]:
+        ok, why = pause_ok(self)
+        return {"text": self.summary_note(), "pause_ok": ok, "why": why, **self.context.line()}
+
+    def on_rotated(self, reason: str) -> None:
+        self.context.on_rotated(reason)
+        self._event("session.rotated", reason=reason, **self.context.line())
 
     # --- the companion screen ------------------------------------------------------------------
 
@@ -908,6 +965,7 @@ class RepairSession:
             "vision": {"level": self.vision_level[0], "reason": self.vision_level[1]},
             "pack": {"id": pack.pack_id, "name": loc(pack.name), "model_data": self.model_data, "placeholder": pack.placeholder} if pack else None,
             "readback": self.readback_pending.say if self.readback_pending else None,
+            "record": self.record_id,
         }
         # faults, ranked, each with the readings that moved it most
         faults: list[dict[str, Any]] = []

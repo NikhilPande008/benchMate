@@ -131,6 +131,20 @@ class RepairRecordRow(SQLModel, table=True):
     t_ms: float
 
 
+class UiEventRow(SQLModel, table=True):
+    """Every UI message the engine sent to the companion screen (events and screen.state), in
+    order, so a session can be replayed through the screen (engine/replay.py)."""
+
+    __tablename__ = "ui_events"
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    run_id: str | None = Field(default=None, index=True)
+    event: str
+    data: str  # JSON, the whole message
+    t_ms: float
+
+
 class SpanIn(BaseModel):
     """A span as sent by the browser (or created by the engine)."""
 
@@ -234,6 +248,10 @@ class TelemetryStore:
             raise ValueError(table)
         self._queue.put_nowait(model)
 
+    def record_ui(self, session_id: str, msg: dict[str, Any], run_id: str | None = None) -> None:
+        self._queue.put_nowait(UiEventRow(session_id=session_id, run_id=run_id, event=str(msg.get("event", ""))[:64],
+                                          data=json.dumps(msg, separators=(",", ":"), default=str), t_ms=now_ms()))
+
     def record_transcript(self, session_id: str, msg: TranscriptIn, run_id: str | None = None) -> None:
         self._queue.put_nowait(
             Transcript(
@@ -315,3 +333,20 @@ def load_repair_state(engine: Engine, session_id: str) -> dict[str, Any] | None:
     with Session(engine) as s:
         row = s.get(RepairStateRow, session_id)
         return json.loads(row.data) if row else None
+
+
+def load_ui_events(engine: Engine, session_id: str) -> list[UiEventRow]:
+    with Session(engine) as s:
+        q = select(UiEventRow).where(UiEventRow.session_id == session_id)
+        return list(s.exec(q.order_by(UiEventRow.id)))  # type: ignore[arg-type]
+
+
+def list_ui_sessions(engine: Engine, limit: int = 50) -> list[dict[str, Any]]:
+    """Sessions that can be replayed, newest first."""
+    from sqlalchemy import func
+
+    with Session(engine) as s:
+        q = (select(UiEventRow.session_id, func.count(UiEventRow.id), func.min(UiEventRow.t_ms), func.max(UiEventRow.t_ms))
+             .group_by(UiEventRow.session_id).order_by(func.max(UiEventRow.t_ms).desc()).limit(limit))
+        return [{"session_id": sid, "messages": n, "started_ms": a, "ended_ms": b, "seconds": round((b - a) / 1000, 1)}
+                for sid, n, a, b in s.exec(q)]  # type: ignore[call-overload]
